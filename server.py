@@ -12,11 +12,26 @@ import argparse
 import json
 import os
 import re
+import socket
 import sys
 import threading
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+# 兼容性关键：ThreadingHTTPServer 是 3.7+ 才加入 http.server 的，精简/老版本 Python 没有
+# 降级策略：优先线程版，没有就用单个请求串行版（标准库 3.3 起就有 HTTPServer）
+from http.server import BaseHTTPRequestHandler, HTTPServer
+try:
+    from http.server import ThreadingHTTPServer  # 3.7+
+except ImportError:  # 精简环境兜底
+    class ThreadingHTTPServer(HTTPServer):
+        """串行处理请求的老式服务器（单用户笔记场景性能足够）"""
+        daemon_threads = True
 from urllib.parse import urlparse
+
+# webbrowser 只影响"自动开浏览器"这一项体验，缺失不致命
+try:
+    import webbrowser
+except ImportError:
+    webbrowser = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_FILE = "chaoji.html"          # 优先找带版本号的最新文件
@@ -173,10 +188,30 @@ def main():
     if not find_frontend():
         print("[错误] 未在 %s 找到 chaoji.html（或 chaoji-v*.html），请把前端文件和 server.py 放同一目录" % HERE)
         sys.exit(1)
+    # 关键标准库软探测：缺了给中文人话，不给堆栈
+    for lib, hint in [
+        ("http.server", "HTTP 服务能力缺失，属精简 Python，请改用浏览器文件模式（直接双击 chaoji-*.html）"),
+        ("json", "json 缺失，无法解析 .nbk，请换完整版 Python 或用浏览器文件模式"),
+    ]:
+        try:
+            __import__(lib)
+        except ImportError:
+            print("[错误] 标准库 %s 不可用：\n  %s" % (lib, lib.strip() and hint))
+            sys.exit(1)
 
-    # 只绑 127.0.0.1，不暴露局域网
+    # 只绑 127.0.0.1（不暴露局域网）；端口被占自动顺延
     url = "http://127.0.0.1:%d/" % args.port
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as e:
+        if getattr(e, "errno", None) in (48, 98, 100) or "address" in str(e).lower() or e.errno == 10048:
+            import socket as _s
+            s = _s.socket(); s.bind(("127.0.0.1", 0)); free = s.getsockname()[1]; s.close()
+            print("[提示] 端口 %d 被占用(%s)，自动改用 %d" % (args.port, e, free))
+            url = "http://127.0.0.1:%d/" % free
+            httpd = ThreadingHTTPServer(("127.0.0.1", free), Handler)
+        else:
+            raise
     print("巢记服务器模式已启动")
     print("  地址     : " + url)
     print("  数据目录 : %s" % DATA_DIR)
@@ -193,9 +228,11 @@ def main():
 
 
 def _open_browser(url):
-    import webbrowser
     import time
     time.sleep(0.6)  # 等服务真正就绪
+    if webbrowser is None:
+        print("  [提示] webbrowser 模块缺失，请手动访问 " + url)
+        return
     try:
         opened = webbrowser.open(url, new=2)
         if not opened:
