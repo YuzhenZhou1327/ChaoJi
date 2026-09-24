@@ -39,10 +39,30 @@
 
 | 版本 | 说明 |
 |---|---|
-| v0.4 (chaoji-v0.4.html) | **右键菜单**（笔记本/分区/页面/编辑器四处定制菜单，视口贴边翻转）；笔记本/分区重命名；左栏树形层级（分区缩进+图标区分父子）；页面栏「＋」直接新建页（无需切换页面）；Ctrl+N 新建页、Ctrl+Shift+S 导出备份；横幅可关闭；server.py 启动自动打开浏览器（--no-browser 禁用） |
+| v0.5 (chaoji-v0.5.html + check.py) | **导出本页为 Word**（.doc，mso 格式带样式，data URI 图片内嵌，文件名自动清洗非法字符）；新增 `check.py` 环境自检（应对缺标准库/无 root 环境，逐项 PASS/FAIL） |
+| v0.4 | 右键菜单（笔记本/分区/页面/编辑器四处定制菜单）、重命名、树形层级缩进、页栏头部＋号直接新建页、横幅可关闭、Ctrl+N/Ctrl+Shift+S、server 启动自动开浏览器（--no-browser 可禁） |
 | v0.3 (server.py) | 服务器模式：`python3 server.py` 起本地服务，保存免授权直写盘（原子写+防路径穿越），HTML 双模式（http://127.0.0.1:8765 有服务走 API，file:// 打开自动退回 FS Access 模式） |
 | v0.2 | Tab 缩进 / 图片拖拽缩放 / 句柄一键恢复 / 标题旁保存时间戳（已移入本地 archive/） |
 | v0.1 | MVP：三栏结构、富文本、图片粘贴、搜索、静默写回、草稿恢复（已移入本地 archive/） |
+
+## 缺标准库 / 无 root 环境的应对
+
+**先跑自检**（Linux 端）：
+
+```bash
+python3 check.py
+```
+
+全部 PASS 直接 `python3 server.py`。遇到 FAIL 的含义和处理：
+
+| FAIL 项 | 含义 | 应对 |
+|---|---|---|
+| http.server / json / argparse 等标准库缺失 | Python 被精简（如精简容器镜像、只装了 python-minimal） | **不需要服务器模式也能用**：双击 `chaoji-v0.5.html` 走 file:// 浏览器文件模式，功能完全一样，只是保存要授权 FS Access |
+| webbrowser 缺失 | 仅影响"自动开浏览器" | 加 `--no-browser` 启动，手动开浏览器输入地址 |
+| 家目录不可写 | 放在只读盘 | 换可写路径：`python3 server.py --dir /tmp/chaoji` |
+| 无法绑端口 | 极少见 | `--port` 换一个，1024 以上端口不需要 root |
+
+**核心理解**：服务器模式是增强、不是依赖——前端 HTML 本身是**纯浏览器**可用的（file:// 双击即用，保存用浏览器 FS Access API），Python 只是把"保存"从「授权句柄写回」升级为「更省心的 API 直写」。**即使 Python 完全不可用，巢记的核心功能也 100% 可用。**
 
 ## 归档
 
