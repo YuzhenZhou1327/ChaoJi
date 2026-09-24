@@ -39,10 +39,31 @@
 
 | 版本 | 说明 |
 |---|---|
+| v0.3 (chaoji-v0.3.html + server.py) | **新增服务器模式**：`python3 server.py` 起本地服务，保存免授权直写盘（原子写+防路径穿越），/ 启动即用 HTML 双模式（http://127.0.0.1:8765 有服务走 API，file:// 打开自动退回 FS Access 模式） |
 | v0.2 (chaoji-v0.2.html) | Tab 缩进 / 图片拖拽缩放 / 句柄一键恢复 / 标题旁保存时间戳 |
 | v0.1 (chaoji.html) | MVP：三栏结构、富文本、图片粘贴、搜索、静默写回、草稿恢复 |
 
-后续版本直接在文件名上带版本号交付（如 `chaoji-v0.3.html`），旧版本保留在仓库 `archive/` 下。
+## 服务器模式（推荐，Linux 端用法）
+
+无需 root、无第三方依赖（纯标准库）：
+
+```bash
+cd ~/notes                       # server.py 和 chaoji-v0.3.html 放同一目录
+python3 server.py                # 默认 http://127.0.0.1:8765/，数据目录 = 同目录
+python3 server.py --port 8899 --dir ~/mydata   # 可选：自定义端口/数据目录
+```
+
+浏览器打开地址即用，保存走 `POST /api/save`（每 30s 自动 + Ctrl+S），**无任何授权弹窗**。
+
+| 端点 | 方法 | 作用 |
+|---|---|---|
+| `/api/ping` | GET | 服务探测（前端据此自动切到服务器模式） |
+| `/api/list` | GET | 列数据目录下所有 .nbk（含修改时间） |
+| `/api/load/<file>` | GET | 读取指定 .nbk |
+| `/api/save` | POST | `{file, state}` 原子写盘（临时文件+rename），文件名白名单校验防路径穿越 |
+
+服务只绑定 127.0.0.1，不暴露局域网。停止：终端 Ctrl+C。
+以后续版本照旧文件名带版本号交付。
 
 ## 已知约束
 
