@@ -101,7 +101,7 @@ button{font-family:inherit;}
     <div id="emptyState">
       <h2>巢记 · 免安装笔记本</h2>
       <p>数据保存在你自己的 <b>.nbk</b> 文件里，每次改动静默写回，不依赖浏览器缓存。<br>点击上方「打开笔记本」选择已有 .nbk 文件，或先新建笔记本再「另存为」。</p>
-      <button class="btn primary" id="btnOpen2">📂 打开 / 新建</button>
+      <button class="btn primary" id="btnOpenOrNew">📂 打开 / 新建笔记本</button>
     </div>
     <div id="editorWrap" style="display:none;">
       <div style="display:flex; align-items:baseline; gap:12px;">
@@ -278,6 +278,21 @@ async function serverPickFile() {
     if (pick && pick.endsWith(".nbk")) return serverLoadFile(pick);
   } catch (e) { toast("服务器列表失败：" + e.message); }
 }
+/* 「打开 / 新建」菜单：真正提供两条路径，不再误导 */
+$("btnOpenOrNew").onclick = async () => {
+  if (serverMode) return serverPickFile();
+  const choice = prompt("输入 1 = 打开已有 .nbk 文件；输入 2 = 新建空白笔记本（Ctrl+S 时再选保存位置）：", "1");
+  if (choice === "1") return openFile();
+  if (choice === "2") {
+    const name = prompt("笔记本名称：", "我的笔记本");
+    if (name === null) return;
+    initBlank();
+    state.notebooks.push(newNb(name || "我的笔记本"));
+    sel = { nb: state.notebooks[0].id, sec: state.notebooks[0].sections[0].id, pg: null };
+    dirty = true;
+    renderAll();
+  }
+};
 async function serverLoadFile(name) {
   try {
     if (!name.endsWith(".nbk")) name += ".nbk";
@@ -313,9 +328,10 @@ function adoptState(obj, name) {
     toast("这不是有效的巢记笔记本文件"); return;
   }
   state = obj;
-  if (state.notebooks.length === 0) state.notebooks.push(newNb("我的笔记本"));
-  sel.nb = state.notebooks[0].id;
-  sel.sec = state.notebooks[0].sections[0] ? state.notebooks[0].sections[0].id : null;
+  // 空笔记本合法存在（用户可能刚建），不再强制塞默认本；列表为空时仍正常渲染空状态
+  sel.nb = state.notebooks[0] ? state.notebooks[0].id : null;
+  const nb0 = findNb(sel.nb);
+  sel.sec = nb0 && nb0.sections[0] ? nb0.sections[0].id : null;
   sel.pg = null;
   $("fileState").textContent = name;
   renderAll();
@@ -325,7 +341,6 @@ function adoptState(obj, name) {
 /* ---------- 新建 ---------- */
 function newNb(name) { return { id: uid(), name, sections: [{ id: uid(), name: "未命名分区", pages: [] }] }; }
 $("btnOpen").onclick = openFile;
-$("btnOpen2").onclick = openFile;
 $("btnSave").onclick = () => { if (serverMode) { saveActive(false); } else { ensureFileThen(() => saveActive(false)); } };
 $("btnExport").onclick = () => { state ? exportDownload() : toast("还没有内容"); };
 $("btnWord").onclick = () => {
@@ -400,8 +415,8 @@ async function ensureFileThen(fn) {
 
 /* ---------- 结构操作 ---------- */
 $("addNb").onclick = () => {
-  if (!state) initBlank();
   const name = prompt("笔记本名称：", "新笔记本"); if (name === null) return;
+  if (!state) initBlank();               // 只创建空壳 state，不塞默认笔记本
   const nb = newNb(name || "新笔记本");
   state.notebooks.push(nb);
   sel = { nb: nb.id, sec: nb.sections[0].id, pg: null }; dirty = true;
@@ -431,8 +446,13 @@ function renameItem(kind, id) {
 function delNb(id) {
   if (!confirm("删除整个笔记本及其全部分区/页面？")) return;
   state.notebooks = state.notebooks.filter(n => n.id !== id);
-  if (state.notebooks.length === 0) state.notebooks.push(newNb("我的笔记本"));
-  if (sel.nb === id) { sel.nb = state.notebooks[0].id; sel.sec = state.notebooks[0].sections[0] ? state.notebooks[0].sections[0].id : null; sel.pg = null; }
+  // 允许删到 0 个：空笔记本是合法状态（可随时从左栏＋重建），不再强制回塞，修复"删不掉"
+  if (sel.nb === id) {
+    const first = state.notebooks[0];
+    sel.nb = first ? first.id : null;
+    sel.sec = first && first.sections[0] ? first.sections[0].id : null;
+    sel.pg = null;
+  }
   dirty = true; renderAll();
 }
 function delSec(id) {
@@ -811,9 +831,7 @@ setInterval(async () => {
   }
 })();
 function initBlank() {
-  state = { app: APP, ver: 1, notebooks: [] };
-  state.notebooks.push(newNb("我的笔记本"));
-  sel = { nb: state.notebooks[0].id, sec: state.notebooks[0].sections[0].id, pg: null };
+  state = { app: APP, ver: 1, notebooks: [] };   // 空壳，不塞默认笔记本（由调用方决定建什么）
   renderAll();
 }
 </script>
