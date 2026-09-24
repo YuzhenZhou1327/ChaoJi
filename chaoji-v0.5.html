@@ -209,14 +209,15 @@ async function saveToHandle(silent) {
     return false;
   }
 }
-/* 服务器模式保存 */
+/* 服务器模式保存：走 URL 路径协议 POST /api/save/<file>，body 即 state JSON
+   （服务器 v2 无 json 依赖，把 JSON 解析留给浏览器） */
 async function saveToServer(silent) {
   if (!serverMode || !serverFile) return false;
   try {
-    const r = await fetch("/api/save", {
+    const r = await fetch("/api/save/" + encodeURIComponent(serverFile), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file: serverFile, state })
+      body: JSON.stringify(state)
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || "unknown");
