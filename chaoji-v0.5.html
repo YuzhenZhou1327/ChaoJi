@@ -300,11 +300,19 @@ async function serverLoadFile(name) {
     const r = await fetch("/api/load/" + encodeURIComponent(name));
     const j = await r.json();
     if (!j.ok) {
-      if (r.status === 404) {  // 新文件：初始空 state
-        adoptState({ app: APP, ver: 1, notebooks: [] }, name);
+      if (r.status === 404) {  // 新文件：植入默认笔记本+分区并立即落盘（否则重开又 404）
+        const fresh = { app: APP, ver: 1, notebooks: [newNb("我的笔记本")] };
+        state = fresh;
+        sel = { nb: fresh.notebooks[0].id, sec: fresh.notebooks[0].sections[0].id, pg: null };
         serverFile = name;
         $("fileState").textContent = name + "（服务器模式）";
-        toast("✓ 新笔记本 " + name);
+        const sr = await fetch("/api/save/" + encodeURIComponent(name), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state)
+        });
+        const sj = await sr.json();
+        if (sj.ok) { dirty = false; lastSavedAt = new Date(); toast("✓ 已创建并打开 " + name); }
+        else toast("⚠ 笔记本已打开但首次保存失败：" + (sj.error || ""));
+        renderAll(); updateStatus();
         return;
       }
       throw new Error(j.error || "unknown");
