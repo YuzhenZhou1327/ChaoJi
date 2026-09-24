@@ -162,6 +162,10 @@ HTML 前端启动时会自动探测服务器是否在线：
 python3 check.py
 ```
 
+**server.py 是极简依赖版**（v2 起）：运行必需的模块只有 `os` / `sys` / `socket`（Python 内核级，几乎任何环境都有）；`time` / `threading` / `webbrowser` 缺失时自动降级（分别影响：时间戳打印、并发处理、自动开浏览器）；`json` / `http.server` / `argparse` / `urllib` / `re` **完全不使用**——HTTP 协议手写解析，JSON 解析由浏览器端完成。
+
+换句话说：只要 `python3 -c "import socket"` 不报错，服务器模式就能跑。
+
 逐项打印 PASS/FAIL，全部 PASS 即可放心 `python3 server.py`。可能的 FAIL 与处理：
 
 | FAIL 项 | 含义 | 应对 |
