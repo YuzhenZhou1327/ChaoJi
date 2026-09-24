@@ -162,6 +162,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--dir", default=None, help="数据目录（默认脚本所在目录）")
+    ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = ap.parse_args()
     if args.dir:
         DATA_DIR = os.path.expanduser(args.dir)
@@ -174,15 +175,33 @@ def main():
         sys.exit(1)
 
     # 只绑 127.0.0.1，不暴露局域网
+    url = "http://127.0.0.1:%d/" % args.port
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print("巢记服务器模式已启动")
-    print("  地址     : http://127.0.0.1:%d/" % args.port)
+    print("  地址     : " + url)
     print("  数据目录 : %s" % DATA_DIR)
     print("  Ctrl+C 停止")
+
+    # 同步自动打开浏览器（非 root、无需安装权限；失败不影响服务）
+    if not args.no_browser:
+        threading.Thread(target=_open_browser, args=(url,), daemon=True).start()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")
+
+
+def _open_browser(url):
+    import webbrowser
+    import time
+    time.sleep(0.6)  # 等服务真正就绪
+    try:
+        opened = webbrowser.open(url, new=2)
+        if not opened:
+            print("  [提示] 未能自动打开浏览器，请手动访问 " + url)
+    except Exception as e:
+        print("  [提示] 自动打开浏览器失败(%s)，请手动访问 %s" % (e, url))
 
 
 if __name__ == "__main__":
