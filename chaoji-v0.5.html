@@ -79,6 +79,7 @@ button{font-family:inherit;}
   <button class="btn" id="btnOpen" title="打开 .nbk 笔记本文件">📂 打开笔记本</button>
   <button class="btn" id="btnSave" title="Ctrl+S，静默写回原文件">💾 保存</button>
   <button class="btn" id="btnExport" title="导出一份副本备份">导出备份</button>
+  <button class="btn" id="btnWord" title="把当前页面导出为 .doc（Word 可直接打开）">📄 导出本页 Word</button>
 </div>
 
 <div id="draftBanner">检测到上次会话的未保存草稿 <button class="btn small" id="draftRestore">恢复草稿</button> <button class="btn small" id="draftDiscard">丢弃</button></div>
@@ -327,6 +328,61 @@ $("btnOpen").onclick = openFile;
 $("btnOpen2").onclick = openFile;
 $("btnSave").onclick = () => { if (serverMode) { saveActive(false); } else { ensureFileThen(() => saveActive(false)); } };
 $("btnExport").onclick = () => { state ? exportDownload() : toast("还没有内容"); };
+$("btnWord").onclick = () => {
+  const p = findPage();
+  if (!p) return toast("请先选中一个页面");
+  exportPageWord(p);
+};
+/* ---------- 当前页导出 Word (.doc, Word/WPS 直接打开) ----------
+   MHTML 思路简化为 word 2000 html 格式：word 原生识别 mso 样式的 html，
+   图片用 data URI 内嵌（Word 2016+/WPS均可打开），文件扩展名 .doc */
+function exportPageWord(p) {
+  const sec = findSec(sel.nb, sel.sec);
+  const nb = findNb(sel.nb);
+  const title = (p.title || "无标题").replace(/[\\/:*?"<>|]/g, "_");
+  const html = "<html xmlns:o='urn:schemas-microsoft-com:office:office' " +
+    "xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>" +
+    "<head><meta charset='utf-8'><title>" + escHtml(title) + "</title>" +
+    "<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->" +
+    "<style>" +
+    "body{font-family:'Microsoft YaHei',sans-serif; font-size:12pt; line-height:1.6;}" +
+    "h1{font-size:18pt;} h2{font-size:15pt;}" +
+    "blockquote{border-left:3pt solid #0f6f5c; padding-left:10pt; color:#555; margin:6pt 0;}" +
+    "img{max-width:16cm; height:auto;}" +
+    "table{border-collapse:collapse;} td,th{border:0.5pt solid #888; padding:3pt 6pt;}" +
+    "@page{margin:2cm;}" +
+    "</style></head><body>" +
+    "<p style='color:#888; font-size:9pt;'>" + escHtml((nb ? nb.name : "") + " / " + (sec ? sec.name : "") + " · 导出于 " +
+      new Date().toLocaleString("zh-CN")) + "</p><hr>" +
+    "<h1>" + escHtml(p.title || "无标题") + "</h1>" +
+    sanitizeForWord(p.html) +
+    "</body></html>";
+  const blob = new Blob(["\ufeff", html], { type: "application/msword" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = title + ".doc";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("✓ 已导出 " + a.download);
+}
+/* Word 专用净化：去掉交互残留（图片缩放角柄 style 由外层 overlay 不在 innerHTML 里，无需处理），保留内联样式 */
+const escHtml = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function sanitizeForWord(html) {
+  // 去脚本/事件属性，保留 img 的 data URI
+  const d = document.createElement("div");
+  d.innerHTML = html || "";
+  d.querySelectorAll("script,style,iframe,object,embed").forEach(n => n.remove());
+  d.querySelectorAll("*").forEach(n => {
+    [...n.attributes].forEach(a => { if (a.name.startsWith("on")) n.removeAttribute(a.name); });
+    if (n.tagName === "IMG") {
+      const w = n.style.width;
+      if (w) n.setAttribute("width", parseInt(w, 10) || "");
+      n.style.width && n.removeAttribute("style") ; // Word 对 style 里的尺寸支持有限，转 width 属性
+    }
+  });
+  return d.innerHTML;
+}
+
 
 // 没有句柄时先引导「另存为」建立 .nbk，再继续保存
 async function ensureFileThen(fn) {
