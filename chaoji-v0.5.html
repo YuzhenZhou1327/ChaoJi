@@ -76,7 +76,8 @@ button{font-family:inherit;}
   <span class="logo">巢记</span>
   <span class="filestate" id="fileState">未打开文件</span>
   <span class="spacer"></span>
-  <button class="btn" id="btnOpen" title="打开 .nbk 笔记本文件">📂 打开笔记本</button>
+  <button class="btn" id="btnOpen" title="打开已有 .nbk 笔记本文件">📂 打开</button>
+  <button class="btn" id="btnNew" title="新建空白笔记本（服务器模式存到数据目录；文件模式 Ctrl+S 时选位置）">➕ 新建</button>
   <button class="btn" id="btnSave" title="Ctrl+S，静默写回原文件">💾 保存</button>
   <button class="btn" id="btnExport" title="导出一份副本备份">导出备份</button>
   <button class="btn" id="btnWord" title="把当前页面导出为 .doc（Word 可直接打开）">📄 导出本页 Word</button>
@@ -100,8 +101,11 @@ button{font-family:inherit;}
   <div class="col col3">
     <div id="emptyState">
       <h2>巢记 · 免安装笔记本</h2>
-      <p>数据保存在你自己的 <b>.nbk</b> 文件里，每次改动静默写回，不依赖浏览器缓存。<br>点击上方「打开笔记本」选择已有 .nbk 文件，或先新建笔记本再「另存为」。</p>
-      <button class="btn primary" id="btnOpenOrNew">📂 打开 / 新建笔记本</button>
+      <p>数据保存在你自己的 <b>.nbk</b> 文件里，每次改动静默写回，不依赖浏览器缓存。</p>
+      <div style="display:flex; gap:10px;">
+        <button class="btn" id="btnOpenOrNew">📂 打开已有笔记本</button>
+        <button class="btn primary" id="btnNewBlank">➕ 新建笔记本</button>
+      </div>
     </div>
     <div id="editorWrap" style="display:none;">
       <div style="display:flex; align-items:baseline; gap:12px;">
@@ -279,21 +283,39 @@ async function serverPickFile() {
     if (pick && pick.endsWith(".nbk")) return serverLoadFile(pick);
   } catch (e) { toast("服务器列表失败：" + e.message); }
 }
-/* 「打开 / 新建」菜单：真正提供两条路径，不再误导 */
-$("btnOpenOrNew").onclick = async () => {
-  if (serverMode) return serverPickFile();
-  const choice = prompt("输入 1 = 打开已有 .nbk 文件；输入 2 = 新建空白笔记本（Ctrl+S 时再选保存位置）：", "1");
-  if (choice === "1") return openFile();
-  if (choice === "2") {
-    const name = prompt("笔记本名称：", "我的笔记本");
-    if (name === null) return;
-    initBlank();
-    state.notebooks.push(newNb(name || "我的笔记本"));
-    sel = { nb: state.notebooks[0].id, sec: state.notebooks[0].sections[0].id, pg: null };
-    dirty = true;
-    renderAll();
+/* 「新建」通用流程：服务器模式直接在数据目录创建并打开；文件模式先建内存，首次 Ctrl+S 落盘 */
+async function createNotebookFlow() {
+  const name = prompt("新笔记本名称：", "我的笔记本");
+  if (name === null) return;
+  initBlank();
+  state.notebooks.push(newNb(name.trim() || "我的笔记本"));
+  sel = { nb: state.notebooks[0].id, sec: state.notebooks[0].sections[0].id, pg: null };
+  dirty = true;
+  renderAll();
+  if (serverMode) {
+    const fName = (name.trim() || "我的笔记本").replace(/[\\/:*?"<>|]/g, "_") + ".nbk";
+    try {
+      const r = await fetch("/api/save/" + encodeURIComponent(fName), {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state)
+      });
+      const j = await r.json();
+      if (j.ok) {
+        serverFile = fName;
+        $("fileState").textContent = fName + "（服务器模式）";
+        dirty = false; lastSavedAt = new Date();
+        updateStatus();
+        toast("✓ 已创建 " + fName);
+      } else {
+        toast("⚠ 已创建但保存失败：" + (j.error || "") + "，可手动 Ctrl+S");
+      }
+    } catch (e) { toast("⚠ 保存失败：" + e.message + "，可手动 Ctrl+S"); }
+  } else {
+    $("fileState").textContent = (name.trim() || "我的笔记本") + "（新笔记本，Ctrl+S 保存到文件）";
   }
-};
+}
+$("btnNew").onclick = createNotebookFlow;
+$("btnNewBlank").onclick = createNotebookFlow;
+/* 「打开」按钮：服务器模式走列表选择（openFile 内部分派），文件模式走系统对话框 */
 async function serverLoadFile(name) {
   try {
     if (!name.endsWith(".nbk")) name += ".nbk";
