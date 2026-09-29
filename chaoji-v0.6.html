@@ -51,11 +51,14 @@ button{font-family:inherit;}
 /* 编辑区 */
 #editorWrap{flex:1; display:flex; flex-direction:column; min-height:0; padding:0 30px 40px; overflow-y:auto;}
 #pgTitle{border:none; outline:none; font-size:24px; font-weight:bold; padding:18px 0 8px; background:transparent; color:var(--fg);}
-#editor{flex:1; min-height:300px; outline:none; font-size:15px; line-height:1.7; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+#editor{flex:1 0 auto; min-height:300px; outline:none; font-size:15px; line-height:1.7; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
 #editor:focus{border-color:var(--accent);}
 #editor img{max-width:100%;}
 #editor blockquote{border-left:3px solid var(--accent); padding-left:12px; color:var(--muted); margin:6px 0;}
 #editor h1{font-size:20px; margin:10px 0 4px;} #editor h2{font-size:17px; margin:8px 0 4px;}
+#editor ul,#editor ol{padding-left:1.6em; margin:4px 0;}
+#editor li{margin:2px 0;}
+#editor ul ul,#editor ol ol,#editor ul ol,#editor ol ul{margin:2px 0;}
 #toolbar{display:flex; gap:4px; padding:8px 0; flex-wrap:wrap;}
 #toolbar .btn{padding:3px 10px; font-size:12.5px;}
 /* 空状态 */
@@ -789,13 +792,33 @@ function pageText(p) {
   return text;
 }
 
-/* ---------- Tab 缩进：无选区→两空格；Shift+Tab→outdent；有选区→indent ---------- */
+/* ---------- Tab：列表内嵌套/反嵌套；非列表无选区插入两空格 ---------- */
+function ctxBlockTag(node) {
+  const ed = $("editor");
+  let n = node;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  while (n && n !== ed) {
+    if (n.nodeType === 1) {
+      const t = n.tagName;
+      if (t === "LI" || t === "BLOCKQUOTE" || t === "H1" || t === "H2" || t === "P" || t === "DIV" || t === "PRE") return t;
+    }
+    n = n.parentElement;
+  }
+  return null;
+}
+function unwrapTag(el) {
+  const p = document.createElement("p");
+  while (el.firstChild) p.appendChild(el.firstChild);
+  el.parentNode.replaceChild(p, el);
+}
 $("editor").addEventListener("keydown", e => {
   if (e.key !== "Tab") return;
   e.preventDefault(); e.stopPropagation();
   const selEd = window.getSelection();
-  if (e.shiftKey && !selEd.isCollapsed) {
-    document.execCommand("outdent", false, null);
+  const tag = selEd.anchorNode ? ctxBlockTag(selEd.anchorNode) : null;
+  if (tag === "LI") {
+    // 列表项：Tab 变二级（indent），Shift+Tab 回一级（outdent）
+    document.execCommand(e.shiftKey ? "outdent" : "indent", false, null);
   } else if (e.shiftKey) {
     document.execCommand("outdent", false, null);
   } else if (selEd.isCollapsed) {
@@ -924,6 +947,19 @@ document.querySelectorAll("#toolbar [data-cmd]").forEach(b => {
     const cmd = b.dataset.cmd;
     $("editor").focus();
     if (cmd === "hiliteColor") document.execCommand("styleWithCSS", false, true), document.execCommand("hiliteColor", false, "#fff3a3");
+    else if (cmd === "formatBlock:blockquote") {
+      // 再点「引用」取消：已在 blockquote 里则拆掉
+      const tag = ctxBlockTag(window.getSelection().anchorNode);
+      if (tag === "BLOCKQUOTE") {
+        let n = window.getSelection().anchorNode;
+        if (n && n.nodeType === 3) n = n.parentElement;
+        while (n && n !== $("editor") && n.tagName !== "BLOCKQUOTE") n = n.parentElement;
+        if (n && n.tagName === "BLOCKQUOTE") unwrapTag(n);
+        else document.execCommand("formatBlock", false, "p");
+      } else {
+        document.execCommand("formatBlock", false, "blockquote");
+      }
+    }
     else if (cmd.startsWith("formatBlock:")) document.execCommand("formatBlock", false, cmd.split(":")[1]);
     else document.execCommand(cmd, false, null);
     const p = findPage();
