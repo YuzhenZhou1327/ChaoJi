@@ -187,7 +187,7 @@ function toastUndo(msg, onUndo) {
   toastTimer = setTimeout(() => {
     el.style.opacity = 0;
     el.style.pointerEvents = "none";
-  }, 6000);
+  }, 10000);
 }
 function relTime(ts) {
   if (!ts) return "";
@@ -461,6 +461,7 @@ async function serverLoadFile(name) {
         const sj = await sr.json();
         if (sj.ok) { dirty = false; lastSavedAt = new Date(); toast("✓ 已创建并打开 " + name); }
         else toast("⚠ 笔记本已打开但首次保存失败：" + (sj.error || ""));
+        $("handleBanner").style.display = "none";
         renderAll(); updateStatus();
         persistSession();
         return;
@@ -470,6 +471,7 @@ async function serverLoadFile(name) {
     serverFile = name;
     adoptState(j.state, name);
     $("fileState").textContent = name + "（服务器模式）";
+    $("handleBanner").style.display = "none";
     dirty = false; lastSavedAt = new Date();
     updateStatus();
     persistSession();
@@ -496,6 +498,7 @@ function adoptState(obj, name) {
   sel.sec = nb0 && nb0.sections[0] ? nb0.sections[0].id : null;
   sel.pg = null;
   $("fileState").textContent = name;
+  $("handleBanner").style.display = "none";
   renderAll();
   toast("✓ 已打开 " + name);
 }
