@@ -241,6 +241,22 @@ def route(method, path, headers, body, conn):
     return http_response(conn, 404, b'{"error":"not found"}')
 
 
+def json_escape(s):
+    """不用 json 模块的最小字符串转义，供手拼 JSON 使用"""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif o < 0x20:
+            out.append("\\u%04x" % o)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def api_list(conn):
     items = []
     try:
@@ -260,7 +276,8 @@ def api_list(conn):
             size = os.path.getsize(full)
         except OSError:
             size = 0
-        items.append('{"file":"%s","size":%d,"mtime":"%s"}' % (fn, size, ts))
+        items.append('{"file":"%s","size":%d,"mtime":"%s"}'
+                     % (json_escape(fn), size, json_escape(ts)))
     return http_response(conn, 200, ('{"ok":true,"items":[%s]}' % ",".join(items)).encode())
 
 

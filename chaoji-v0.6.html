@@ -159,10 +159,43 @@ let serverFile = null;      // 服务器模式当前文件名
 /* ---------- toast ---------- */
 let toastTimer = null;
 function toast(msg) {
-  $("toast").textContent = msg;
-  $("toast").style.opacity = 1;
+  const el = $("toast");
+  el.textContent = msg;
+  el.style.opacity = 1;
+  el.style.pointerEvents = "none";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").style.opacity = 0; }, 2500);
+  toastTimer = setTimeout(() => { el.style.opacity = 0; }, 2500);
+}
+/* 带「撤销」的提示（删除后悔药） */
+function toastUndo(msg, onUndo) {
+  const el = $("toast");
+  el.innerHTML = "";
+  el.style.opacity = 1;
+  el.style.pointerEvents = "auto";
+  const span = document.createElement("span");
+  span.textContent = msg + " ";
+  const btn = document.createElement("button");
+  btn.textContent = "撤销";
+  btn.style.cssText = "margin-left:10px; padding:2px 10px; cursor:pointer; border:1px solid #888; background:#fff; color:#222; border-radius:4px; font-size:12px;";
+  btn.onclick = () => {
+    el.style.opacity = 0; el.style.pointerEvents = "none";
+    clearTimeout(toastTimer);
+    onUndo();
+  };
+  el.appendChild(span); el.appendChild(btn);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.style.opacity = 0;
+    el.style.pointerEvents = "none";
+  }, 6000);
+}
+function relTime(ts) {
+  if (!ts) return "";
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "刚刚";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+  return new Date(ts).toLocaleDateString("zh-CN");
 }
 
 /* ---------- IndexedDB：会话衔接 + 草稿镜像（非持久层，.nbk 才是真相源） ----------
@@ -311,22 +344,69 @@ async function openFile() {
     if (e.name !== "AbortError") toast("打开失败：" + e.message);
   }
 }
-/* 服务器模式：列出数据目录 .nbk 供选择 */
+/* 服务器模式：列表弹层选择/新建 .nbk（替代 prompt 序号） */
+function pickNbkModal(items) {
+  return new Promise(resolve => {
+    const mask = document.createElement("div");
+    mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:300; display:flex; align-items:center; justify-content:center;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:#fff; border-radius:8px; width:min(420px, 92vw); max-height:70vh; display:flex; flex-direction:column; box-shadow:0 8px 28px rgba(0,0,0,.2);";
+    const head = document.createElement("div");
+    head.style.cssText = "padding:12px 16px; font-weight:bold; border-bottom:1px solid var(--line);";
+    head.textContent = items.length ? "打开数据目录中的笔记本" : "数据目录还没有 .nbk，可新建一个";
+    const list = document.createElement("div");
+    list.style.cssText = "overflow:auto; flex:1; padding:6px 0;";
+    if (!items.length) {
+      const tip = document.createElement("div");
+      tip.style.cssText = "padding:8px 16px; color:var(--muted); font-size:13px;";
+      tip.textContent = "输入文件名新建笔记本（自动补 .nbk）";
+      list.appendChild(tip);
+    }
+    items.forEach(it => {
+      const row = document.createElement("div");
+      row.style.cssText = "padding:10px 16px; cursor:pointer; display:flex; justify-content:space-between; gap:10px; font-size:13.5px;";
+      row.innerHTML = "<span></span><span style='color:var(--muted); font-size:12px; white-space:nowrap;'></span>";
+      row.children[0].textContent = it.file;
+      row.children[1].textContent = (it.mtime || "") + (it.size ? " · " + Math.max(1, Math.round(it.size / 1024)) + "KB" : "");
+      row.onmouseenter = () => row.style.background = "var(--accent-soft)";
+      row.onmouseleave = () => row.style.background = "";
+      row.onclick = () => { close(); resolve({ type: "open", file: it.file }); };
+      list.appendChild(row);
+    });
+    const foot = document.createElement("div");
+    foot.style.cssText = "padding:12px 16px; border-top:1px solid var(--line); display:flex; gap:8px;";
+    const inp = document.createElement("input");
+    inp.placeholder = "新笔记本文件名，如 我的笔记本.nbk";
+    inp.style.cssText = "flex:1; padding:6px 10px; border:1px solid var(--line); border-radius:5px; font-size:13px;";
+    const btnOk = document.createElement("button");
+    btnOk.className = "btn primary"; btnOk.textContent = "新建并打开";
+    const btnCancel = document.createElement("button");
+    btnCancel.className = "btn"; btnCancel.textContent = "取消";
+    btnOk.onclick = () => {
+      let name = (inp.value || "").trim();
+      if (!name) { inp.focus(); return; }
+      if (!name.endsWith(".nbk")) name += ".nbk";
+      close(); resolve({ type: "create", file: name });
+    };
+    btnCancel.onclick = () => { close(); resolve(null); };
+    foot.appendChild(inp); foot.appendChild(btnOk); foot.appendChild(btnCancel);
+    box.appendChild(head); box.appendChild(list); box.appendChild(foot);
+    mask.appendChild(box);
+    function close() { mask.remove(); }
+    mask.onclick = e => { if (e.target === mask) { close(); resolve(null); } };
+    document.body.appendChild(mask);
+    inp.focus();
+    inp.onkeydown = e => { if (e.key === "Enter") btnOk.click(); if (e.key === "Escape") btnCancel.click(); };
+  });
+}
 async function serverPickFile() {
   try {
     const r = await fetch("/api/list");
     const j = await r.json();
-    if (!j.ok || !j.items.length) {
-      const name = prompt("数据目录还没有 .nbk 文件。输入新笔记本文件名（如 我的笔记本.nbk）：", "我的笔记本.nbk");
-      if (name && name.endsWith(".nbk")) return serverLoadFile(name);
-      return;
-    }
-    const lines = j.items.map((it, i) => (i + 1) + ". " + it.file + "  (" + it.mtime + ")");
-    const pick = prompt("数据目录中的笔记本：\n" + lines.join("\n") + "\n\n输入序号打开，或输入新文件名新建：", "1");
-    if (pick === null) return;
-    const n = parseInt(pick, 10);
-    if (!isNaN(n) && n >= 1 && n <= j.items.length) return serverLoadFile(j.items[n - 1].file);
-    if (pick && pick.endsWith(".nbk")) return serverLoadFile(pick);
+    const items = (j.ok && j.items) || [];
+    const pick = await pickNbkModal(items);
+    if (!pick) return;
+    return serverLoadFile(pick.file);
   } catch (e) { toast("服务器列表失败：" + e.message); }
 }
 /* 「新建」通用流程：服务器模式直接在数据目录创建并打开；文件模式先建内存，首次 Ctrl+S 落盘 */
@@ -529,8 +609,11 @@ function renameItem(kind, id) {
 }
 function delNb(id) {
   if (!confirm("删除整个笔记本及其全部分区/页面？")) return;
-  state.notebooks = state.notebooks.filter(n => n.id !== id);
+  const idx = state.notebooks.findIndex(n => n.id === id);
+  if (idx < 0) return;
+  const [removed] = state.notebooks.splice(idx, 1);
   // 允许删到 0 个：空笔记本是合法状态（可随时从左栏＋重建），不再强制回塞，修复"删不掉"
+  const prevSel = { ...sel };
   if (sel.nb === id) {
     const first = state.notebooks[0];
     sel.nb = first ? first.id : null;
@@ -538,20 +621,43 @@ function delNb(id) {
     sel.pg = null;
   }
   markDirty(); renderAll();
+  toastUndo("已删除笔记本「" + (removed.name || "") + "」", () => {
+    state.notebooks.splice(idx, 0, removed);
+    sel = prevSel;
+    markDirty(); renderAll();
+  });
 }
 function delSec(id) {
   const nb = state.notebooks.find(n => n.id === sel.nb);
+  if (!nb) return;
   if (!confirm("删除分区及其中所有页面？")) return;
-  nb.sections = nb.sections.filter(s => s.id !== id);
+  const idx = nb.sections.findIndex(s => s.id === id);
+  if (idx < 0) return;
+  const [removed] = nb.sections.splice(idx, 1);
+  const prevSel = { ...sel };
   if (sel.sec === id) { sel.sec = nb.sections[0] ? nb.sections[0].id : null; sel.pg = null; }
   markDirty(); renderAll();
+  toastUndo("已删除分区「" + (removed.name || "") + "」", () => {
+    nb.sections.splice(idx, 0, removed);
+    sel = prevSel;
+    markDirty(); renderAll();
+  });
 }
 function delPg(id) {
   const sec = findSec(sel.nb, sel.sec);
+  if (!sec) return;
   if (!confirm("删除本页？")) return;
-  sec.pages = sec.pages.filter(p => p.id !== id);
+  const idx = sec.pages.findIndex(p => p.id === id);
+  if (idx < 0) return;
+  const [removed] = sec.pages.splice(idx, 1);
+  const prevPg = sel.pg;
   if (sel.pg === id) sel.pg = null;
   markDirty(); renderAll();
+  toastUndo("已删除页面「" + (removed.title || "无标题") + "」", () => {
+    sec.pages.splice(idx, 0, removed);
+    sel.pg = prevPg;
+    markDirty(); renderAll();
+  });
 }
 const findNb = id => state && state.notebooks.find(n => n.id === id);
 const findSec = (nbId, secId) => { const nb = findNb(nbId); return nb ? nb.sections.find(s => s.id === secId) : null; };
@@ -596,12 +702,14 @@ function renderPages() {
   const sec = findSec(sel.nb, sel.sec); if (!sec) return;
   const kw = $("pgSearch").value.trim().toLowerCase();
   sec.pages.forEach(p => {
-    const hit = !kw || p.title.toLowerCase().includes(kw) || stripTags(p.html).toLowerCase().includes(kw);
+    const hit = !kw || p.title.toLowerCase().includes(kw) || pageText(p).toLowerCase().includes(kw);
     if (!hit) return;
     const d = document.createElement("div");
     d.className = "item" + (p.id === sel.pg ? " sel" : "");
-    d.innerHTML = "<span></span><span class='del'>✕</span>";
-    d.children[0].textContent = p.title || "（无标题）";
+    d.style.alignItems = "flex-start";
+    d.innerHTML = "<span style='flex:1; min-width:0;'><div class='pg-title'></div><div class='pg-time' style='font-size:11px; color:var(--muted); margin-top:2px;'></div></span><span class='del'>✕</span>";
+    d.querySelector(".pg-title").textContent = p.title || "（无标题）";
+    d.querySelector(".pg-time").textContent = relTime(p.updated || p.created);
     d.onclick = e => { if (e.target.classList.contains("del")) return delPg(p.id); sel.pg = p.id; renderAll(); };
     d.oncontextmenu = e => { e.preventDefault(); ctxMenu(e, [["🗑 删除", () => delPg(p.id)], ["📋 复制页面", () => copyPage(p)]]); };
     el.appendChild(d);
@@ -610,8 +718,8 @@ function renderPages() {
 /* 复制页（追加到当前分区末尾） */
 function copyPage(p) {
   const sec = findSec(sel.nb, sel.sec); if (!sec) return;
-  const np = JSON.parse(JSON.stringify(p));
-  np.id = uid(); np.title = (p.title || "无标题") + " (副本)"; np.created = np.updated = Date.now();
+  // 浅拷贝即可：html 是不可变字符串，深拷贝 base64 大图会卡顿
+  const np = { ...p, id: uid(), title: (p.title || "无标题") + " (副本)", created: Date.now(), updated: Date.now() };
   sec.pages.unshift(np); sel.pg = np.id; markDirty(); renderAll();
 }
 
@@ -660,6 +768,16 @@ $("editor").addEventListener("contextmenu", e => {
   ctxMenu(e, items);
 });
 const stripTags = h => { const d = document.createElement("div"); d.innerHTML = h || ""; return d.textContent; };
+/* 搜索用正文缓存：按页 id + html 引用失效，避免每键 DOM 解析 */
+const textCache = new Map();
+function pageText(p) {
+  const c = textCache.get(p.id);
+  if (c && c.html === p.html) return c.text;
+  const text = stripTags(p.html);
+  if (textCache.size > 500) textCache.clear();
+  textCache.set(p.id, { html: p.html, text });
+  return text;
+}
 
 /* ---------- Tab 缩进：无选区→两空格；Shift+Tab→outdent；有选区→indent ---------- */
 $("editor").addEventListener("keydown", e => {
@@ -817,18 +935,24 @@ $("btnImg").onclick = () => {
 function compressImage(file) {
   return new Promise(res => {
     const img = new Image();
+    const url = URL.createObjectURL(file);
     img.onload = () => {
-      const MAX = 1280;
-      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-      const c = document.createElement("canvas");
-      c.width = img.width * scale; c.height = img.height * scale;
-      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      res(c.toDataURL("image/jpeg", 0.82));
+      try {
+        const MAX = 1280;
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+        const c = document.createElement("canvas");
+        c.width = img.width * scale; c.height = img.height * scale;
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        res(c.toDataURL("image/jpeg", 0.82));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     };
     img.onerror = () => { // 压缩失败退回原始读法
+      URL.revokeObjectURL(url);
       const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
     };
-    img.src = URL.createObjectURL(file);
+    img.src = url;
   });
 }
 /* 粘贴图片 */
