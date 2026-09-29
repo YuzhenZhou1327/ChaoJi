@@ -55,7 +55,7 @@ DATA_DIR = HERE
 
 
 def find_frontend():
-    """优先 chaoji-vX.Y.html 中版本号最大的，否则 chaoji.html（不用 re）"""
+    """返回 chaoji-vX.Y.html 中版本号最大的那个（不用 re）"""
     best, best_key = None, (-1, -1)
     try:
         names = os.listdir(HERE)
@@ -70,9 +70,7 @@ def find_frontend():
             key = (int(parts[0]), int(parts[1]))
             if key > best_key:
                 best, best_key = fn, key
-    if best:
-        return best
-    return "chaoji.html" if os.path.exists(os.path.join(HERE, "chaoji.html")) else None
+    return best
 
 
 def valid_nbk_name(name):
@@ -320,7 +318,7 @@ def api_save_jsonbody(body, conn):
         import json
     except ImportError:
         return http_response(conn, 500,
-            b'{"error":"\u6b64\u73af\u5883\u7f3a json \u6a21\u5757\uff0c\u8bf7\u5347\u7ea7\u524d\u7aef\u6216\u6362\u5b8c\u6574 Python"}')
+            '{"error":"此环境缺 json 模块，请升级前端或换完整 Python"}'.encode("utf-8"))
     try:
         payload = json.loads(body.decode("utf-8"))
         name = payload.get("file", "")
@@ -372,7 +370,7 @@ def main():
             sys.exit(1)
 
     if not find_frontend():
-        print("[错误] 未在 %s 找到 chaoji.html（或 chaoji-v*.html）" % HERE)
+        print("[错误] 未在 %s 找到 chaoji-v*.html（如 chaoji-v0.6.html）" % HERE)
         print("       请把前端 HTML 和 server.py 放同一目录")
         sys.exit(1)
 
@@ -395,17 +393,6 @@ def main():
     print("  Ctrl+C 停止")
 
     if not no_browser:
-        def open_browser():
-            if time:
-                time.sleep(0.6)
-            if webbrowser is None:
-                print("  [提示] webbrowser 缺失，请手动访问 " + url)
-                return
-            try:
-                if not webbrowser.open(url, new=2):
-                    print("  [提示] 请手动访问 " + url)
-            except Exception as e:
-                print("  [提示] 自动打开浏览器失败(%s)，请访问 %s" % (e, url))
         if threading is not None:
             t = threading.Thread(target=_open_browser, args=(url,))
             t.daemon = True

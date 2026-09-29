@@ -84,7 +84,7 @@ button{font-family:inherit;}
 </div>
 
 <div id="draftBanner">检测到上次会话的未保存草稿 <button class="btn small" id="draftRestore">恢复草稿</button> <button class="btn small" id="draftDiscard">丢弃</button></div>
-<div id="handleBanner" style="display:none; padding:8px 14px; background:var(--accent-soft); border-bottom:1px solid var(--line); font-size:13px;">检测到上次打开的笔记本：<span id="handleName" style="font-weight:bold;"></span> <button class="btn small" id="handleRestore">一点恢复（免选文件）</button> <button class="btn small" id="handleForget">忘掉它，手动选</button> <span class="add" id="handleClose" title="关闭" style="cursor:pointer; margin-left:10px;">✕</span></div>
+<div id="handleBanner" style="display:none; padding:8px 14px; background:var(--accent-soft); border-bottom:1px solid var(--line); font-size:13px;"><span id="handleName" style="font-weight:bold;"></span> <button class="btn small" id="handleRestore">一点恢复</button> <button class="btn small" id="handleFileOnly" style="display:none">只要文件</button> <button class="btn small" id="handleForget">忘掉它</button> <span class="add" id="handleClose" title="关闭" style="cursor:pointer; margin-left:10px;">✕</span></div>
 
 <div id="main">
   <div class="col col1">
@@ -165,7 +165,9 @@ function toast(msg) {
   toastTimer = setTimeout(() => { $("toast").style.opacity = 0; }, 2500);
 }
 
-/* ---------- IndexedDB 镜像（会话内恢复用） ---------- */
+/* ---------- IndexedDB：会话衔接 + 草稿镜像（非持久层，.nbk 才是真相源） ----------
+   keys: "session" -> {fileHandle, fileName, serverFile, lastSavedAt, dirty}
+         "draft"   -> {state, savedAt, dirty}  |  兼容旧版纯 JSON 字符串 */
 function idbOpen() {
   return new Promise((res, rej) => {
     const r = indexedDB.open(APP, 1);
@@ -174,23 +176,62 @@ function idbOpen() {
     r.onerror = () => rej(r.error);
   });
 }
-async function idbPut(val) {
+async function idbSet(key, val) {
   try {
     const db = await idbOpen();
     const tx = db.transaction("kv", "readwrite");
-    tx.objectStore("kv").put(val, "draft");
+    tx.objectStore("kv").put(val, key);
   } catch (e) { /* 静默：镜像失败不影响主流程 */ }
 }
-async function idbGet() {
+async function idbGet(key) {
   try {
     const db = await idbOpen();
     return new Promise(res => {
       const tx = db.transaction("kv", "readonly");
-      const q = tx.objectStore("kv").get("draft");
+      const q = tx.objectStore("kv").get(key);
       q.onsuccess = () => res(q.result || null);
       q.onerror = () => res(null);
     });
   } catch (e) { return null; }
+}
+async function idbDel(key) {
+  try {
+    const db = await idbOpen();
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").delete(key);
+  } catch (e) { /* ignore */ }
+}
+/* 兼容旧草稿：JSON 字符串 / {state,savedAt} / 裸 state 对象 */
+function normalizeDraft(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try { return { state: JSON.parse(raw), savedAt: 0, dirty: true }; }
+    catch (e) { return null; }
+  }
+  if (raw.state) return { state: raw.state, savedAt: raw.savedAt || 0, dirty: raw.dirty !== false };
+  if (raw.app === APP) return { state: raw, savedAt: 0, dirty: true };
+  return null;
+}
+/* 写回会话元数据（句柄可 structured-clone 进 IDB；失败不影响编辑） */
+async function persistSession() {
+  await idbSet("session", {
+    fileHandle: fileHandle || null,
+    fileName: fileHandle ? fileHandle.name : null,
+    serverFile: serverMode ? serverFile : null,
+    lastSavedAt: lastSavedAt ? lastSavedAt.getTime() : null,
+    dirty: !!dirty
+  });
+}
+/* 草稿镜像 + 会话 dirty 标记：防抖写，避免每键整本序列化 */
+let snapTimer = null;
+function scheduleSnapshot() {
+  if (snapTimer) clearTimeout(snapTimer);
+  snapTimer = setTimeout(async () => {
+    snapTimer = null;
+    if (!state) return;
+    await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
+    await persistSession();
+  }, 600);
 }
 
 /* ---------- 保存：主=静默写回句柄/服务器API；备=下载 ---------- */
@@ -205,6 +246,7 @@ async function saveToHandle(silent) {
     await w.close();
     dirty = false; lastSavedAt = new Date();
     updateStatus();
+    persistSession();
     if (!silent) toast("✓ 已写回 " + fileHandle.name);
     return true;
   } catch (e) {
@@ -227,6 +269,7 @@ async function saveToServer(silent) {
     if (!j.ok) throw new Error(j.error || "unknown");
     dirty = false; lastSavedAt = new Date();
     updateStatus();
+    persistSession();
     if (!silent) toast("✓ 已保存 " + serverFile);
     return true;
   } catch (e) {
@@ -241,7 +284,8 @@ function exportDownload() {
   a.download = (currentNbName() || "chaoji") + "-" + new Date().toISOString().slice(0, 16).replace(/[:T]/g, "") + ".nbk";
   a.click();
   URL.revokeObjectURL(a.href);
-  dirty = false; lastSavedAt = new Date();
+  // 导出备份 ≠ 写回原文件：不得清除 dirty，否则关页不再拦截
+  toast("✓ 已导出备份 " + a.download + (dirty ? "（原文件仍有未写回改动）" : ""));
   updateStatus();
 }
 const currentNbName = () => {
@@ -261,6 +305,8 @@ async function openFile() {
     const file = await h.getFile();
     const text = await file.text();
     adoptState(JSON.parse(text), h.name);
+    dirty = false; lastSavedAt = new Date();
+    persistSession();
   } catch (e) {
     if (e.name !== "AbortError") toast("打开失败：" + e.message);
   }
@@ -290,7 +336,7 @@ async function createNotebookFlow() {
   initBlank();
   state.notebooks.push(newNb(name.trim() || "我的笔记本"));
   sel = { nb: state.notebooks[0].id, sec: state.notebooks[0].sections[0].id, pg: null };
-  dirty = true;
+  markDirty();
   renderAll();
   if (serverMode) {
     const fName = (name.trim() || "我的笔记本").replace(/[\\/:*?"<>|]/g, "_") + ".nbk";
@@ -304,6 +350,7 @@ async function createNotebookFlow() {
         $("fileState").textContent = fName + "（服务器模式）";
         dirty = false; lastSavedAt = new Date();
         updateStatus();
+        persistSession();
         toast("✓ 已创建 " + fName);
       } else {
         toast("⚠ 已创建但保存失败：" + (j.error || "") + "，可手动 Ctrl+S");
@@ -335,6 +382,7 @@ async function serverLoadFile(name) {
         if (sj.ok) { dirty = false; lastSavedAt = new Date(); toast("✓ 已创建并打开 " + name); }
         else toast("⚠ 笔记本已打开但首次保存失败：" + (sj.error || ""));
         renderAll(); updateStatus();
+        persistSession();
         return;
       }
       throw new Error(j.error || "unknown");
@@ -342,6 +390,9 @@ async function serverLoadFile(name) {
     serverFile = name;
     adoptState(j.state, name);
     $("fileState").textContent = name + "（服务器模式）";
+    dirty = false; lastSavedAt = new Date();
+    updateStatus();
+    persistSession();
   } catch (e) { toast("打开失败：" + e.message); }
 }
 function legacyOpen() {
@@ -372,6 +423,7 @@ function adoptState(obj, name) {
 /* ---------- 新建 ---------- */
 function newNb(name) { return { id: uid(), name, sections: [{ id: uid(), name: "未命名分区", pages: [] }] }; }
 $("btnOpen").onclick = openFile;
+$("btnOpenOrNew").onclick = openFile;   // 空态页「打开已有笔记本」
 $("btnSave").onclick = () => { if (serverMode) { saveActive(false); } else { ensureFileThen(() => saveActive(false)); } };
 $("btnExport").onclick = () => { state ? exportDownload() : toast("还没有内容"); };
 $("btnWord").onclick = () => {
@@ -440,6 +492,7 @@ async function ensureFileThen(fn) {
     });
     fileHandle = h;
     $("fileState").textContent = h.name;
+    persistSession();
     return fn();
   } catch (e) { if (e.name !== "AbortError") toast("保存中断：" + e.message); }
 }
@@ -450,8 +503,8 @@ $("addNb").onclick = () => {
   if (!state) initBlank();               // 只创建空壳 state，不塞默认笔记本
   const nb = newNb(name || "新笔记本");
   state.notebooks.push(nb);
-  sel = { nb: nb.id, sec: nb.sections[0].id, pg: null }; dirty = true;
-  renderAll();
+  sel = { nb: nb.id, sec: nb.sections[0].id, pg: null };
+  markDirty(); renderAll();
 };
 $("addSec").onclick = () => {
   const nb = state && state.notebooks.find(n => n.id === sel.nb);
@@ -459,8 +512,8 @@ $("addSec").onclick = () => {
   const name = prompt("分区名称：", "新分区"); if (name === null) return;
   const sec = { id: uid(), name: name || "新分区", pages: [] };
   nb.sections.push(sec);
-  sel.sec = sec.id; sel.pg = null; dirty = true;
-  renderAll();
+  sel.sec = sec.id; sel.pg = null;
+  markDirty(); renderAll();
 };
 function renameItem(kind, id) {
   if (kind === "nb") {
@@ -472,7 +525,7 @@ function renameItem(kind, id) {
     const name = prompt("重命名分区：", sec.name); if (name === null || !name.trim()) return;
     sec.name = name.trim();
   }
-  dirty = true; renderAll();
+  markDirty(); renderAll();
 }
 function delNb(id) {
   if (!confirm("删除整个笔记本及其全部分区/页面？")) return;
@@ -484,21 +537,21 @@ function delNb(id) {
     sel.sec = first && first.sections[0] ? first.sections[0].id : null;
     sel.pg = null;
   }
-  dirty = true; renderAll();
+  markDirty(); renderAll();
 }
 function delSec(id) {
   const nb = state.notebooks.find(n => n.id === sel.nb);
   if (!confirm("删除分区及其中所有页面？")) return;
   nb.sections = nb.sections.filter(s => s.id !== id);
   if (sel.sec === id) { sel.sec = nb.sections[0] ? nb.sections[0].id : null; sel.pg = null; }
-  dirty = true; renderAll();
+  markDirty(); renderAll();
 }
 function delPg(id) {
   const sec = findSec(sel.nb, sel.sec);
   if (!confirm("删除本页？")) return;
   sec.pages = sec.pages.filter(p => p.id !== id);
   if (sel.pg === id) sel.pg = null;
-  dirty = true; renderAll();
+  markDirty(); renderAll();
 }
 const findNb = id => state && state.notebooks.find(n => n.id === id);
 const findSec = (nbId, secId) => { const nb = findNb(nbId); return nb ? nb.sections.find(s => s.id === secId) : null; };
@@ -559,7 +612,7 @@ function copyPage(p) {
   const sec = findSec(sel.nb, sel.sec); if (!sec) return;
   const np = JSON.parse(JSON.stringify(p));
   np.id = uid(); np.title = (p.title || "无标题") + " (副本)"; np.created = np.updated = Date.now();
-  sec.pages.unshift(np); sel.pg = np.id; dirty = true; renderAll();
+  sec.pages.unshift(np); sel.pg = np.id; markDirty(); renderAll();
 }
 
 /* ---------- 自定义右键菜单 ---------- */
@@ -600,7 +653,7 @@ $("editor").addEventListener("contextmenu", e => {
     ["📋 复制", () => document.execCommand("copy")],
     ["📥 粘贴", () => { toast("请用 Ctrl+V 粘贴（浏览器安全限制）"); }],
     [null, null],
-    ["🖍 高亮选中", () => { document.execCommand("styleWithCSS", false, true); document.execCommand("hiliteColor", false, "#fff3a3"); const p = findPage(); if (p) { p.html = $("editor").innerHTML; markDirty(true); } }],
+    ["🖍 高亮选中", () => { document.execCommand("styleWithCSS", false, true); document.execCommand("hiliteColor", false, "#fff3a3"); const p = findPage(); if (p) { p.html = $("editor").innerHTML; markDirty(); } }],
     ["🖼 插入图片", () => $("btnImg").click()],
     ["⊞ 全选", () => document.execCommand("selectAll")],
   ];
@@ -623,7 +676,7 @@ $("editor").addEventListener("keydown", e => {
     document.execCommand("indent", false, null);
   }
   const p = findPage();
-  if (p) { p.html = $("editor").innerHTML; markDirty(true); }
+  if (p) { p.html = $("editor").innerHTML; markDirty(); }
 });
 
 /* ---------- 图片尺寸调整：点击图片出现角柄，拖拽缩放 ---------- */
@@ -667,7 +720,7 @@ $("editor").addEventListener("keydown", e => {
     if (resizing) {
       resizing = false;
       const p = findPage();
-      if (p && p.html !== $("editor").innerHTML) { p.html = $("editor").innerHTML; markDirty(true); }
+      if (p && p.html !== $("editor").innerHTML) { p.html = $("editor").innerHTML; markDirty(); }
     }
   });
   // 图片样式默认
@@ -693,7 +746,7 @@ function addPage() {
   if (!sec) { toast("请先选中一个分区"); return; }
   const p = { id: uid(), title: "", html: "", created: Date.now(), updated: Date.now() };
   sec.pages.unshift(p);
-  sel.pg = p.id; dirty = true; renderAll();
+  sel.pg = p.id; markDirty(); renderAll();
   $("pgTitle").focus();
 }
 function updateStatus() {
@@ -716,25 +769,25 @@ function updateStatus() {
 /* ---------- 编辑 ---------- */
 $("pgTitle").addEventListener("input", () => {
   const p = findPage(); if (!p) return;
-  p.title = $("pgTitle").value; p.updated = Date.now(); markDirty(false);
+  p.title = $("pgTitle").value; p.updated = Date.now(); markDirty();
 });
 $("editor").addEventListener("input", () => {
   const p = findPage(); if (!p) return;
-  p.html = $("editor").innerHTML; p.updated = Date.now(); markDirty(false);
+  p.html = $("editor").innerHTML; p.updated = Date.now(); markDirty();
 });
-function markDirty(reschedule) {
+function markDirty() {
   dirty = true; updateStatus();
-  idbPut(JSON.stringify(state));               // 会话内镜像
-  if (reschedule) scheduleSave();
+  scheduleSnapshot();               // 草稿镜像防抖
+  scheduleSave();                   // 自动写回防抖
 }
-// 输入防抖：停手 800ms 后延迟触发自动保存网格
+/* 输入防抖：停手约 1s 后写回；另有 30s 兜底定时器 */
 let saveTimer = null;
 function scheduleSave() {
-  if (saveTimer) return;
+  if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     saveTimer = null;
-    if (dirty && fileHandle) saveToHandle(true);
-  }, 30000);
+    if (dirty && (fileHandle || (serverMode && serverFile))) await saveActive(true);
+  }, 1000);
 }
 
 /* toolbar 命令 */
@@ -746,7 +799,7 @@ document.querySelectorAll("#toolbar [data-cmd]").forEach(b => {
     else if (cmd.startsWith("formatBlock:")) document.execCommand("formatBlock", false, cmd.split(":")[1]);
     else document.execCommand(cmd, false, null);
     const p = findPage();
-    if (p) { p.html = $("editor").innerHTML; markDirty(true); }
+    if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
 });
 $("btnImg").onclick = () => {
@@ -757,7 +810,7 @@ $("btnImg").onclick = () => {
     const dataUrl = await compressImage(f);
     document.execCommand("insertHTML", false, "<img src='" + dataUrl + "'>");
     const p = findPage();
-    if (p) { p.html = $("editor").innerHTML; markDirty(true); }
+    if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
   inp.click();
 };
@@ -788,7 +841,7 @@ $("editor").addEventListener("paste", async e => {
   const dataUrl = await compressImage(blob);
   document.execCommand("insertHTML", false, "<img src='" + dataUrl + "'>");
   const p = findPage();
-  if (p) { p.html = $("editor").innerHTML; markDirty(true); }
+  if (p) { p.html = $("editor").innerHTML; markDirty(); }
 });
 
 /* 搜索 */
@@ -821,17 +874,67 @@ document.addEventListener("keydown", e => {
 
 /* 关闭前拦截未保存改动 */
 window.addEventListener("beforeunload", e => {
-  if (dirty || saveTimer) { e.preventDefault(); e.returnValue = ""; }
+  if (dirty) { e.preventDefault(); e.returnValue = ""; }
 });
 
-/* 30 秒自动保存（服务器模式或已有句柄时） */
+/* 30 秒兜底自动保存（防抖之外的保险丝） */
 setInterval(async () => {
   if (dirty && (fileHandle || (serverMode && serverFile))) await saveActive(true);
 }, 30000);
 
-/* ---------- 启动：服务器模式探测 + 草稿恢复检查 ---------- */
+/* ---------- 启动：服务器探测 → 会话/句柄恢复 → 草稿衔接 ----------
+   横幅约定：任一时刻最多一条恢复横幅（句柄优先，草稿仅在无句柄时独立出现） */
+function hideRecoverBanners() {
+  $("handleBanner").style.display = "none";
+  $("draftBanner").style.display = "none";
+}
+function draftIsNewer(sess, draftRaw) {
+  const d = normalizeDraft(draftRaw);
+  return !!(d && d.state && d.state.app === APP && d.dirty && (d.savedAt || 0) > ((sess && sess.lastSavedAt) || 0));
+}
+/* applyDraft=true 时把未写回草稿一并套用（用户点「一点恢复」默认要最新内容） */
+async function restoreFromSession(sess, draftRaw, applyDraft) {
+  const h = sess && sess.fileHandle;
+  if (!h) return false;
+  try {
+    if (h.queryPermission) {
+      const p = await h.queryPermission({ mode: "readwrite" });
+      if (p !== "granted") {
+        if ((await h.requestPermission({ mode: "readwrite" })) !== "granted") {
+          toast("未授权访问该文件，请再点「一点恢复」或手动打开");
+          return false;
+        }
+      }
+    }
+    fileHandle = h;
+    const text = await (await h.getFile()).text();
+    const obj = JSON.parse(text);
+    if (!obj || obj.app !== APP) {
+      fileHandle = null;
+      toast("文件不是有效的巢记笔记本");
+      return false;
+    }
+    const d = normalizeDraft(draftRaw);
+    const useDraft = applyDraft && draftIsNewer(sess, draftRaw);
+    adoptState(useDraft ? d.state : obj, h.name + (useDraft ? "（含未写回改动）" : ""));
+    fileHandle = h;
+    lastSavedAt = sess.lastSavedAt ? new Date(sess.lastSavedAt) : null;
+    dirty = useDraft ? true : !!sess.dirty;
+    hideRecoverBanners();
+    updateStatus();
+    persistSession();
+    scheduleSnapshot();
+    if (dirty) scheduleSave();
+    return true;
+  } catch (e) {
+    fileHandle = null;
+    toast("恢复上次笔记本失败：" + e.message + "，可手动打开 .nbk");
+    return false;
+  }
+}
+
 (async () => {
-  // 探测服务器模式
+  // 1) 探测服务器模式
   try {
     const r = await fetch("/api/ping", { cache: "no-store" });
     if (r.ok) {
@@ -839,26 +942,90 @@ setInterval(async () => {
       if (j.ok && j.mode === "server") {
         serverMode = true;
         $("fileState").textContent = "服务器模式 · 数据目录 " + j.dataDir;
-        $("handleBanner").style.display = "block";
-        $("handleName").textContent = "（服务器模式：点「打开笔记本」列出/新建 .nbk）";
-        $("handleRestore").textContent = "📂 选择笔记本";
-        $("handleRestore").onclick = () => serverPickFile();
-        $("handleForget").style.display = "none";
         updateStatus();
+        const sess = await idbGet("session");
+        if (sess && sess.serverFile) {
+          await serverLoadFile(sess.serverFile);   // 刷新后续写同一 .nbk
+        } else {
+          $("handleBanner").style.display = "block";
+          $("handleName").textContent = "服务器模式：选择或新建 .nbk";
+          $("handleRestore").textContent = "📂 选择笔记本";
+          $("handleRestore").onclick = () => serverPickFile();
+          $("handleFileOnly").style.display = "none";
+          $("handleForget").style.display = "none";
+        }
         return;
       }
     }
   } catch (e) { /* 非 http 或服务未起，走文件模式 */ }
-  const draft = await idbGet();
-  if (draft && state === null) {
+
+  // 2) 文件模式：句柄与草稿合并为一条横幅，绝不叠两条
+  const sess = await idbGet("session");
+  const draftRaw = await idbGet("draft");
+  const newerDraft = draftIsNewer(sess, draftRaw);
+
+  if (sess && sess.fileHandle) {
+    let perm = "unknown";
     try {
-      const obj = JSON.parse(draft);
-      if (obj && obj.app === APP) {
-        $("draftBanner").style.display = "block";
-        $("draftRestore").onclick = () => { adoptState(obj, "上次草稿（未选文件）"); fileHandle = null; };
-        $("draftDiscard").onclick = () => { $("draftBanner").style.display = "none"; idbPut(JSON.stringify({ app: "empty" })); };
+      if (sess.fileHandle.queryPermission) {
+        perm = await sess.fileHandle.queryPermission({ mode: "readwrite" });
       }
-    } catch (e) { /* 忽略脏草稿 */ }
+    } catch (e) { perm = "unknown"; }
+
+    if (perm === "granted") {
+      // 已授权：直接续上；若有更新草稿则默认套用（用户刷新前多半在改这份）
+      const ok = await restoreFromSession(sess, draftRaw, newerDraft);
+      if (ok) return;
+    }
+    // 需用户手势授权 → 单条横幅承载全部恢复选项
+    $("draftBanner").style.display = "none";
+    $("handleBanner").style.display = "block";
+    const name = sess.fileName || sess.fileHandle.name || "上次笔记本";
+    $("handleName").textContent = "检测到上次打开的笔记本：" + name + (newerDraft ? "（含未写回改动）" : "");
+    $("handleRestore").textContent = newerDraft ? "一点恢复（含未写回）" : "一点恢复（免选文件）";
+    $("handleRestore").onclick = async () => {
+      const ok = await restoreFromSession(sess, draftRaw, true);
+      if (ok) toast("✓ 已恢复 " + name + (newerDraft ? "（含未写回改动）" : ""));
+    };
+    if (newerDraft) {
+      $("handleFileOnly").style.display = "";
+      $("handleFileOnly").onclick = async () => {
+        const ok = await restoreFromSession(sess, draftRaw, false);
+        if (ok) {
+          idbSet("draft", { state, savedAt: Date.now(), dirty: false });
+          toast("✓ 已恢复 " + name + "（丢弃未写回改动）");
+        }
+      };
+    } else {
+      $("handleFileOnly").style.display = "none";
+    }
+    $("handleForget").style.display = "";
+    $("handleForget").onclick = async () => {
+      await idbDel("session");
+      if (newerDraft) await idbSet("draft", { app: "empty", savedAt: Date.now() });
+      hideRecoverBanners();
+      toast("已忘掉上次文件" + (newerDraft ? "与未写回草稿" : "") + "，请手动打开 .nbk");
+    };
+    return;   // 有句柄就不再走独立草稿横幅
+  }
+
+  // 3) 仅草稿（无句柄）：这才单独出草稿横幅
+  const d = normalizeDraft(draftRaw);
+  if (d && d.state && d.state.app === APP && state === null) {
+    $("handleBanner").style.display = "none";
+    $("draftBanner").style.display = "block";
+    $("draftRestore").onclick = () => {
+      adoptState(d.state, "上次草稿（未关联文件）");
+      dirty = true;
+      updateStatus();
+      scheduleSnapshot();
+      scheduleSave();
+      $("draftBanner").style.display = "none";
+    };
+    $("draftDiscard").onclick = () => {
+      $("draftBanner").style.display = "none";
+      idbSet("draft", { app: "empty", savedAt: Date.now() });
+    };
   }
 })();
 function initBlank() {
