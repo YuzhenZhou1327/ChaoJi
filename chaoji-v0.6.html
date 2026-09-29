@@ -726,9 +726,12 @@ function copyPage(p) {
   sec.pages.unshift(np); sel.pg = np.id; markDirty(); renderAll();
 }
 
-/* ---------- 自定义右键菜单 ---------- */
+/* ---------- 自定义右键菜单 ----------
+   关闭用 mousedown/Escape，绝不在 contextmenu 上关：
+   否则「打开菜单的同一次右键」冒泡到 document 会把刚建的菜单立刻收掉。 */
 let ctxEl = null;
 function ctxMenu(e, items) {
+  if (e && e.preventDefault) e.preventDefault();
   closeCtx();
   const m = document.createElement("div");
   m.style.cssText = "position:fixed; z-index:200; background:#fff; border:1px solid var(--line); box-shadow:0 4px 14px rgba(0,0,0,.18); border-radius:6px; padding:4px 0; min-width:140px; font-size:13px;";
@@ -740,6 +743,8 @@ function ctxMenu(e, items) {
     it.onmouseenter = () => it.style.background = "var(--accent-soft)";
     it.onmouseleave = () => it.style.background = "";
     it.onclick = () => { closeCtx(); fn(); };
+    // 防止点菜单项时 mousedown 先冒泡被外层当成「点外面」
+    it.onmousedown = ev => ev.stopPropagation();
     m.appendChild(it);
   });
   document.body.appendChild(m);
@@ -750,12 +755,14 @@ function ctxMenu(e, items) {
   if (y + r.height > window.innerHeight - 6) y = window.innerHeight - r.height - 6;
   m.style.left = x + "px"; m.style.top = y + "px";
   ctxEl = m;
-  setTimeout(() => {
-    document.addEventListener("click", closeCtx, { once: true });
-    document.addEventListener("contextmenu", closeCtx, { once: true });
-  }, 0);
 }
 function closeCtx() { if (ctxEl) { ctxEl.remove(); ctxEl = null; } }
+document.addEventListener("mousedown", e => {
+  if (ctxEl && !ctxEl.contains(e.target)) closeCtx();
+}, true);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeCtx(); });
+window.addEventListener("blur", closeCtx);
+window.addEventListener("resize", closeCtx);
 /* 编辑器右键菜单：格式操作 + 插入图片 */
 $("editor").addEventListener("contextmenu", e => {
   e.preventDefault();
