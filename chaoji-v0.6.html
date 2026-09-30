@@ -178,6 +178,7 @@ button{font-family:inherit;}
         <button class="btn" id="btnCodeBlock" title="代码块（再点取消）">```</button>
         <button class="btn" data-cmd="hiliteColor" title="高亮">🖍</button>
         <button class="btn" id="btnImg" title="插入图片">🖼 图片</button>
+        <button class="btn" id="btnLink" title="插入链接（可对选中文字加链接）">🔗 链接</button>
         <button class="btn" id="btnTable" title="插入表格（默认 2 列，可改行列）">▦ 表格</button>
       </div>
       </div>
@@ -1144,6 +1145,7 @@ $("editor").addEventListener("contextmenu", e => {
     [null, null],
     ["🖍 高亮选中", () => { document.execCommand("styleWithCSS", false, true); document.execCommand("hiliteColor", false, "#fff3a3"); const p = findPage(); if (p) { p.html = $("editor").innerHTML; markDirty(); } }],
     ["🖼 插入图片", () => $("btnImg").click()],
+    ["🔗 插入链接", () => $("btnLink").click()],
     ["⊞ 全选", () => document.execCommand("selectAll")],
   ];
   if (inTable) {
@@ -1623,6 +1625,88 @@ $("btnImg").onclick = () => {
     if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
   inp.click();
+};
+/* 插入/编辑链接：选中文字可作链接文本；已在链接上则可改地址或清除 */
+$("btnLink").onclick = () => {
+  const sel = window.getSelection();
+  const savedRange = saveEditorRange();
+  let n = sel && sel.anchorNode;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  const existing = n && n.closest ? n.closest("a[href]") : null;
+  const selectedText = sel && !sel.isCollapsed ? String(sel) : (existing ? existing.textContent : "");
+  const oldHref = existing ? (existing.getAttribute("href") || "") : "";
+
+  const mask = document.createElement("div");
+  mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:300; display:flex; align-items:center; justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff; border-radius:8px; padding:16px 18px; width:min(380px,92vw); box-shadow:0 8px 28px rgba(0,0,0,.2);";
+  box.innerHTML = "<div style='font-weight:bold; margin-bottom:10px;'>" + (existing ? "编辑链接" : "插入链接") + "</div>" +
+    "<div style='display:flex; gap:10px; align-items:center; margin-bottom:8px; font-size:13px;'><label style='width:48px;'>文字</label><input id='lnkText' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;' placeholder='链接显示文字'></div>" +
+    "<div style='display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:13px;'><label style='width:48px;'>地址</label><input id='lnkHref' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;' placeholder='https://... 或相对路径'></div>" +
+    "<div style='display:flex; gap:8px; justify-content:flex-end;'>" +
+    (existing ? "<button class='btn' id='lnkRemove' style='margin-right:auto; color:var(--danger);'>移除链接</button>" : "") +
+    "<button class='btn' id='lnkCancel'>取消</button><button class='btn primary' id='lnkOk'>确定</button></div>";
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  const textI = box.querySelector("#lnkText");
+  const hrefI = box.querySelector("#lnkHref");
+  textI.value = selectedText;
+  hrefI.value = oldHref;
+  textI.focus();
+  mask.onclick = e => { if (e.target === mask) close(); };
+  box.querySelector("#lnkCancel").onclick = close;
+  const removeBtn = box.querySelector("#lnkRemove");
+  if (removeBtn) removeBtn.onclick = () => {
+    close();
+    if (existing) unwrapNode(existing);
+    const pg = findPage();
+    if (pg) { pg.html = $("editor").innerHTML; markDirty(); }
+    toast("已移除链接");
+  };
+  const apply = () => {
+    const text = textI.value.trim() || hrefI.value.trim();
+    let href = hrefI.value.trim();
+    if (!href) { hrefI.focus(); return; }
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) && !href.startsWith("/") && !href.startsWith("#") && !href.startsWith("./") && !href.startsWith("../")) {
+      href = "https://" + href;
+    }
+    close();
+    $("editor").focus({ preventScroll: true });
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    if (existing) {
+      existing.setAttribute("href", href);
+      existing.textContent = text;
+      const pg = findPage();
+      if (pg) { pg.html = $("editor").innerHTML; markDirty(); }
+      toast("✓ 已更新链接");
+      return;
+    }
+    if (savedRange) {
+      const r = savedRange;
+      r.deleteContents();
+      const a = document.createElement("a");
+      a.href = href;
+      a.textContent = text;
+      r.insertNode(a);
+      const after = document.createRange();
+      after.setStartAfter(a);
+      after.collapse(true);
+      const sel2 = window.getSelection();
+      sel2.removeAllRanges();
+      sel2.addRange(after);
+    } else {
+      document.execCommand("insertHTML", false, "<a href=\"" + esc(href) + "\">" + esc(text) + "</a>");
+    }
+    const pg = findPage();
+    if (pg) { pg.html = $("editor").innerHTML; markDirty(); }
+    toast("✓ 已插入链接");
+  };
+  box.querySelector("#lnkOk").onclick = apply;
+  box.onkeydown = e => {
+    if (e.key === "Enter") apply();
+    if (e.key === "Escape") close();
+  };
 };
 function compressImage(file) {
   return new Promise(res => {
