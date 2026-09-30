@@ -174,8 +174,8 @@ button{font-family:inherit;}
         <button class="btn" data-cmd="strikeThrough"><s>S</s></button>
         <button class="btn" data-cmd="insertUnorderedList">• 列表</button>
         <button class="btn" data-cmd="insertOrderedList">1. 列表</button>
-        <button class="btn" id="btnInlineCode" title="行内代码">`码`</button>
-        <button class="btn" id="btnCodeBlock" title="代码块">```</button>
+        <button class="btn" id="btnInlineCode" title="行内代码（再点取消）">`码`</button>
+        <button class="btn" id="btnCodeBlock" title="代码块（再点取消）">```</button>
         <button class="btn" data-cmd="hiliteColor" title="高亮">🖍</button>
         <button class="btn" id="btnImg" title="插入图片">🖼 图片</button>
         <button class="btn" id="btnTable" title="插入表格（默认 2 列，可改行列）">▦ 表格</button>
@@ -1363,35 +1363,77 @@ function wrapInlineTag(tag) {
     document.execCommand("insertHTML", false, "<" + tag + ">&#8203;</" + tag + ">");
   }
 }
+function unwrapNode(el) {
+  const parent = el.parentNode;
+  if (!parent) return;
+  while (el.firstChild) parent.insertBefore(el.firstChild, el);
+  parent.removeChild(el);
+}
+function findAncestorTag(tag) {
+  const sel = window.getSelection();
+  let n = sel && sel.anchorNode;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  while (n && n !== $("editor")) {
+    if (n.nodeType === 1 && n.tagName === tag) return n;
+    n = n.parentElement;
+  }
+  return null;
+}
 $("btnInlineCode").onclick = () => {
+  // 已在行内代码上 → 取消（与引用切换同逻辑）
+  const code = findAncestorTag("CODE");
+  if (code && !code.closest("pre")) {
+    unwrapNode(code);
+    const p0 = findPage();
+    if (p0) { p0.html = $("editor").innerHTML; markDirty(); }
+    return;
+  }
   wrapInlineTag("code");
   const p = findPage();
   if (p) { p.html = $("editor").innerHTML; markDirty(); }
 };
 $("btnCodeBlock").onclick = () => {
   $("editor").focus();
+  const pre = findAncestorTag("PRE");
+  if (pre) {
+    // 已在代码块上 → 取消，恢复为普通段落
+    const lines = (pre.textContent || "").replace(/\n$/, "").split("\n");
+    const frag = document.createDocumentFragment();
+    (lines.length ? lines : [""]).forEach(line => {
+      const p = document.createElement("p");
+      p.textContent = line || "​";
+      frag.appendChild(p);
+    });
+    pre.parentNode.replaceChild(frag, pre);
+    const p0 = findPage();
+    if (p0) { p0.html = $("editor").innerHTML; markDirty(); }
+    return;
+  }
   const sel = window.getSelection();
   const text = sel && !sel.isCollapsed ? String(sel) : "在这里输入代码";
-  const pre = document.createElement("pre");
+  const preEl = document.createElement("pre");
   const code = document.createElement("code");
   code.textContent = text;
-  pre.appendChild(code);
+  preEl.appendChild(code);
   const after = document.createElement("p");
   after.appendChild(document.createElement("br"));
+  const wrap = $("editorWrap");
+  const scrollTop = wrap ? wrap.scrollTop : 0;
   if (sel.rangeCount) {
     const range = sel.getRangeAt(0);
     range.deleteContents();
     range.insertNode(after);
-    range.insertNode(pre);
+    range.insertNode(preEl);
     const caret = document.createRange();
     caret.selectNodeContents(code);
     caret.collapse(false);
     sel.removeAllRanges();
     sel.addRange(caret);
   } else {
-    $("editor").appendChild(pre);
+    $("editor").appendChild(preEl);
     $("editor").appendChild(after);
   }
+  if (wrap) wrap.scrollTop = scrollTop;
   const p = findPage();
   if (p) { p.html = $("editor").innerHTML; markDirty(); }
 };
@@ -1402,7 +1444,9 @@ function saveEditorRange() {
   return $("editor").contains(r.commonAncestorContainer) ? r.cloneRange() : null;
 }
 function insertNodesAtEditor(nodes, range) {
-  $("editor").focus();
+  const wrap = $("editorWrap");
+  const scrollTop = wrap ? wrap.scrollTop : 0;
+  $("editor").focus({ preventScroll: true });
   const sel = window.getSelection();
   let r = range;
   if (!r) {
@@ -1425,6 +1469,9 @@ function insertNodesAtEditor(nodes, range) {
     sel.removeAllRanges();
     sel.addRange(caret);
   }
+  // 保持滚动位置，避免跳到编辑区顶部
+  if (wrap) wrap.scrollTop = scrollTop;
+  if (last && last.scrollIntoView) last.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 function buildTableHtml(cols, rows) {
   let html = "<table><thead><tr>";
