@@ -176,7 +176,7 @@ button{font-family:inherit;}
         <button class="btn" data-cmd="insertOrderedList">1. 列表</button>
         <button class="btn" id="btnInlineCode" title="行内代码（再点取消）">`码`</button>
         <button class="btn" id="btnCodeBlock" title="代码块（再点取消）">```</button>
-        <button class="btn" data-cmd="hiliteColor" title="高亮">🖍</button>
+        <button class="btn" id="btnHilite" title="高亮（再点取消）">🖍</button>
         <button class="btn" id="btnImg" title="插入图片">🖼 图片</button>
         <button class="btn" id="btnLink" title="插入链接（可对选中文字加链接）">🔗 链接</button>
         <button class="btn" id="btnTable" title="插入表格（默认 2 列，可改行列）">▦ 表格</button>
@@ -1143,7 +1143,7 @@ $("editor").addEventListener("contextmenu", e => {
     ["📋 复制", () => document.execCommand("copy")],
     ["📥 粘贴", () => { toast("请用 Ctrl+V 粘贴（浏览器安全限制）"); }],
     [null, null],
-    ["🖍 高亮选中", () => { document.execCommand("styleWithCSS", false, true); document.execCommand("hiliteColor", false, "#fff3a3"); const p = findPage(); if (p) { p.html = $("editor").innerHTML; markDirty(); } }],
+    ["🖍 高亮/取消高亮", () => toggleHighlight()],
     ["🖼 插入图片", () => $("btnImg").click()],
     ["🔗 插入链接", () => $("btnLink").click()],
     ["⊞ 全选", () => document.execCommand("selectAll")],
@@ -1324,13 +1324,80 @@ function scheduleSave() {
 document.querySelectorAll("#toolbar [data-cmd]").forEach(b => {
   b.onclick = () => {
     const cmd = b.dataset.cmd;
-    $("editor").focus();
-    if (cmd === "hiliteColor") document.execCommand("styleWithCSS", false, true), document.execCommand("hiliteColor", false, "#fff3a3");
-    else document.execCommand(cmd, false, null);
+    $("editor").focus({ preventScroll: true });
+    document.execCommand(cmd, false, null);
     const p = findPage();
     if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
 });
+/* 高亮：与引用/代码同逻辑，再点取消 */
+const HILITE_CSS = "rgb(255, 243, 163)";
+function isHighlighted() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return false;
+  try {
+    const v = document.queryCommandValue("hiliteColor") || document.queryCommandValue("backColor");
+    if (v && /255,\s*243,\s*163|#fff3a3/i.test(v)) return true;
+  } catch (e) { /* ignore */ }
+  let n = sel.anchorNode;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  while (n && n !== $("editor")) {
+    if (n.nodeType === 1) {
+      if (n.tagName === "MARK") return true;
+      const bg = (n.style && n.style.backgroundColor) || "";
+      if (bg && /255,\s*243,\s*163|fff3a3/i.test(bg)) return true;
+    }
+    n = n.parentElement;
+  }
+  return false;
+}
+function clearHighlightIn(node) {
+  if (!node || node.nodeType !== 1) return;
+  if (node.tagName === "MARK") { unwrapNode(node); return; }
+  if (node.style && node.style.backgroundColor) {
+    node.style.backgroundColor = "";
+    const st = node.getAttribute("style");
+    if (!st || !st.trim()) unwrapNode(node);
+  }
+  [...node.querySelectorAll("mark, [style*='background']")].forEach(clearHighlightIn);
+}
+function toggleHighlight() {
+  const ed = $("editor");
+  ed.focus({ preventScroll: true });
+  const sel = window.getSelection();
+  if (isHighlighted()) {
+    if (sel.isCollapsed) {
+      let n = sel.anchorNode;
+      if (n && n.nodeType === 3) n = n.parentElement;
+      while (n && n !== ed) {
+        if (n.nodeType === 1 && (n.tagName === "MARK" || (n.style && n.style.backgroundColor))) {
+          clearHighlightIn(n);
+          break;
+        }
+        n = n.parentElement;
+      }
+    } else {
+      // 选区：清背景色
+      document.execCommand("styleWithCSS", false, true);
+      document.execCommand("hiliteColor", false, "transparent");
+      // 兜底：选区内残留 mark / bgcolor
+      const range = sel.getRangeAt(0);
+      const frag = range.cloneContents();
+      const tmp = document.createElement("div");
+      tmp.appendChild(frag);
+      // 对实际 DOM 中与选区相交的节点清理
+      [...ed.querySelectorAll("mark, [style*='background']")].forEach(el => {
+        if (sel.containsNode(el, true) || range.intersectsNode(el)) clearHighlightIn(el);
+      });
+    }
+  } else {
+    document.execCommand("styleWithCSS", false, true);
+    document.execCommand("hiliteColor", false, "#fff3a3");
+  }
+  const p = findPage();
+  if (p) { p.html = ed.innerHTML; markDirty(); }
+}
+$("btnHilite").onclick = toggleHighlight;
 /* 标题级别下拉 */
 $("blockLevel").onchange = () => {
   const v = $("blockLevel").value;
