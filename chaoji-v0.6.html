@@ -90,13 +90,21 @@ button{font-family:inherit;}
 @media print {
   body > *:not(#printArea){display:none !important;}
   #printArea{display:block !important; padding:0; font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:#000;}
+  #printArea h1{font-size:20pt; margin:10pt 0 6pt;} #printArea h2{font-size:16pt; margin:8pt 0 5pt;}
+  #printArea h3{font-size:13pt;} #printArea h4{font-size:12pt;} #printArea h5{font-size:11pt;} #printArea h6{font-size:10pt;}
   #printArea img{max-width:100%;}
-  #printArea blockquote{border-left:3pt solid #0f6f5c; padding-left:10pt; color:#555;}
-  #printArea code{font-family:Consolas,Monaco,monospace; background:#f4f4f4; padding:1px 4px;}
-  #printArea pre{background:#f4f4f4; padding:8pt 10pt; white-space:pre-wrap;}
+  #printArea a{color:#000; text-decoration:underline;}
+  #printArea blockquote{border-left:3pt solid #0f6f5c; padding-left:10pt; color:#555; margin:6pt 0;}
+  #printArea code{font-family:Consolas,Monaco,monospace; background:#f4f4f4; padding:1pt 3pt; font-size:9pt;}
+  #printArea pre{background:#f4f4f4; padding:8pt 10pt; white-space:pre-wrap; font-size:9pt; line-height:1.45;}
   #printArea pre code{background:none; padding:0;}
+  #printArea ul,#printArea ol{padding-left:1.5em; margin:4pt 0;}
+  #printArea li{margin:2pt 0;}
   #printArea table{border-collapse:collapse; width:100%; margin:8pt 0;}
   #printArea td,#printArea th{border:0.5pt solid #888; padding:4pt 6pt;}
+  #printArea th{background:#eef4f2; font-weight:bold;}
+  #printArea mark,#printArea [style*="background"]{background:#fff3a3 !important; color:#000;}
+  #printArea hr{border:none; border-top:1pt solid #ccc; margin:8pt 0;}
 }
 #topbar .tb-group{display:flex; align-items:center; gap:6px;}
 #topbar .tb-sep{width:1px; height:22px; background:var(--line); margin:0 4px;}
@@ -114,7 +122,7 @@ button{font-family:inherit;}
   </div>
   <div class="tb-sep"></div>
   <div class="tb-group">
-    <button class="btn" id="btnImportMd" title="导入 Markdown 文件为新页面">📥 导入</button>
+    <button class="btn" id="btnImportMd" title="导入 Markdown（.md）文件为新页面">📥 导入 MD</button>
     <button class="btn" id="btnExportMenu" title="导出当前页 / 整本 / 备份">📤 导出 ▾</button>
   </div>
 </div>
@@ -587,10 +595,20 @@ function exportPageWord(p) {
     "<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->" +
     "<style>" +
     "body{font-family:'Microsoft YaHei',sans-serif; font-size:12pt; line-height:1.6;}" +
-    "h1{font-size:18pt;} h2{font-size:15pt;}" +
+    "h1{font-size:18pt; margin:10pt 0 6pt;} h2{font-size:15pt; margin:8pt 0 5pt;}" +
+    "h3{font-size:13pt; margin:6pt 0 4pt;} h4{font-size:12pt;} h5{font-size:11pt; color:#444;} h6{font-size:10pt; color:#666;}" +
     "blockquote{border-left:3pt solid #0f6f5c; padding-left:10pt; color:#555; margin:6pt 0;}" +
     "img{max-width:16cm; height:auto;}" +
-    "table{border-collapse:collapse;} td,th{border:0.5pt solid #888; padding:3pt 6pt;}" +
+    "table{border-collapse:collapse; width:100%;} td,th{border:0.5pt solid #888; padding:3pt 6pt;}" +
+    "th{background:#eef4f2; font-weight:bold;}" +
+    "ul,ol{margin:4pt 0; padding-left:1.4em;} li{margin:2pt 0;}" +
+    "code{font-family:Consolas,'Courier New',monospace; background:#f2f2f2; padding:1pt 3pt; font-size:10pt;}" +
+    "pre{background:#f2f2f2; padding:8pt 10pt; white-space:pre-wrap; font-family:Consolas,'Courier New',monospace; font-size:10pt;}" +
+    "pre code{background:none; padding:0;}" +
+    "a{color:#0f6f5c;}" +
+    "mark{background:#fff3a3;}" +
+    "hr{border:none; border-top:1pt solid #ccc;}" +
+    "u{text-decoration:underline;} s{line-through;}" +
     "@page{margin:2cm;}" +
     "</style></head><body>" +
     "<p style='color:#888; font-size:9pt;'>" + escHtml((nb ? nb.name : "") + " / " + (sec ? sec.name : "") + " · 导出于 " +
@@ -1111,9 +1129,14 @@ document.addEventListener("mousedown", e => {
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeCtx(); });
 window.addEventListener("blur", closeCtx);
 window.addEventListener("resize", closeCtx);
-/* 编辑器右键菜单：格式操作 + 插入图片 */
+/* 编辑器右键菜单：格式操作 + 插入图片 + 表格行列 */
 $("editor").addEventListener("contextmenu", e => {
   e.preventDefault();
+  let n = e.target;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  const inTable = n && n.closest ? n.closest("table") : null;
+  const cellHit = n && n.closest ? n.closest("td,th") : null;
+  if (cellHit) lastTableCell = cellHit;
   const items = [
     ["✂ 剪切", () => document.execCommand("cut")],
     ["📋 复制", () => document.execCommand("copy")],
@@ -1123,6 +1146,15 @@ $("editor").addEventListener("contextmenu", e => {
     ["🖼 插入图片", () => $("btnImg").click()],
     ["⊞ 全选", () => document.execCommand("selectAll")],
   ];
+  if (inTable) {
+    items.push([null, null]);
+    items.push(["⬇ 下方插行", () => tableOp("rowBelow")]);
+    items.push(["⬆ 上方插行", () => tableOp("rowAbove")]);
+    items.push(["➡ 右侧插列", () => tableOp("colRight")]);
+    items.push(["⬅ 左侧插列", () => tableOp("colLeft")]);
+    items.push(["🗑 删除本行", () => tableOp("delRow")]);
+    items.push(["🗑 删除本列", () => tableOp("delCol")]);
+  }
   ctxMenu(e, items);
 });
 const stripTags = h => { const d = document.createElement("div"); d.innerHTML = h || ""; return d.textContent; };
@@ -1363,15 +1395,115 @@ $("btnCodeBlock").onclick = () => {
   const p = findPage();
   if (p) { p.html = $("editor").innerHTML; markDirty(); }
 };
+function saveEditorRange() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return null;
+  const r = sel.getRangeAt(0);
+  return $("editor").contains(r.commonAncestorContainer) ? r.cloneRange() : null;
+}
+function insertNodesAtEditor(nodes, range) {
+  $("editor").focus();
+  const sel = window.getSelection();
+  let r = range;
+  if (!r) {
+    r = document.createRange();
+    r.selectNodeContents($("editor"));
+    r.collapse(false); // 末尾
+  }
+  r.deleteContents();
+  let last = null;
+  // 逆序插入，保证顺序
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    r.insertNode(nodes[i]);
+    last = nodes[i];
+    r.setStartBefore(nodes[i]);
+  }
+  if (last) {
+    const caret = document.createRange();
+    caret.setStartAfter(last);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+}
+function buildTableHtml(cols, rows) {
+  let html = "<table><thead><tr>";
+  for (let c = 0; c < cols; c++) html += "<th><br></th>";
+  html += "</tr></thead><tbody>";
+  for (let r = 0; r < rows - 1; r++) {
+    html += "<tr>";
+    for (let c = 0; c < cols; c++) html += "<td><br></td>";
+    html += "</tr>";
+  }
+  return html + "</tbody></table>";
+}
+/* 表格行列操作 */
+let lastTableCell = null;
+function currentCell() {
+  const sel = window.getSelection();
+  let n = sel && sel.anchorNode;
+  if (n && n.nodeType === 3) n = n.parentElement;
+  const fromSel = n && n.closest ? n.closest("td,th") : null;
+  if (fromSel) { lastTableCell = fromSel; return fromSel; }
+  return lastTableCell && lastTableCell.isConnected ? lastTableCell : null;
+}
+function tableOp(op) {
+  const cell = currentCell();
+  if (!cell) return toast("请先把光标点进表格单元格");
+  const tr = cell.parentElement;
+  const table = cell.closest("table");
+  const colIdx = [...tr.children].indexOf(cell);
+  const sync = () => {
+    const p = findPage();
+    if (p) { p.html = $("editor").innerHTML; markDirty(); }
+  };
+  if (op === "rowBelow" || op === "rowAbove") {
+    const nr = document.createElement("tr");
+    const cols = tr.children.length || 1;
+    for (let i = 0; i < cols; i++) nr.appendChild(document.createElement("td"));
+    nr.children[Math.min(colIdx, cols - 1)].innerHTML = "<br>";
+    if (op === "rowAbove") tr.parentNode.insertBefore(nr, tr);
+    else tr.parentNode.insertBefore(nr, tr.nextSibling);
+    lastTableCell = nr.children[Math.min(colIdx, cols - 1)];
+  } else if (op === "colLeft" || op === "colRight") {
+    let newCell = null;
+    [...table.querySelectorAll("tr")].forEach(row => {
+      const ref = row.children[colIdx];
+      if (!ref) return;
+      const nc = document.createElement(ref.tagName);
+      nc.innerHTML = "<br>";
+      if (op === "colLeft") row.insertBefore(nc, ref);
+      else row.insertBefore(nc, ref.nextSibling);
+      if (row === tr) newCell = nc;
+    });
+    if (newCell) lastTableCell = newCell;
+  } else if (op === "delRow") {
+    const total = table.querySelectorAll("tr").length;
+    if (total <= 1) return toast("至少保留一行");
+    const fallback = tr.previousElementSibling || tr.nextElementSibling;
+    tr.remove();
+    lastTableCell = fallback ? fallback.querySelector("td,th") : null;
+  } else if (op === "delCol") {
+    const colCount = tr.children.length;
+    if (colCount <= 1) return toast("至少保留一列");
+    [...table.querySelectorAll("tr")].forEach(row => {
+      if (row.children[colIdx]) row.children[colIdx].remove();
+    });
+    const row2 = table.querySelector("tr");
+    lastTableCell = row2 ? (row2.children[Math.max(0, colIdx - 1)] || row2.children[0]) : null;
+  }
+  sync();
+}
 $("btnTable").onclick = () => {
+  const savedRange = saveEditorRange();
   const mask = document.createElement("div");
   mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:300; display:flex; align-items:center; justify-content:center;";
   const box = document.createElement("div");
   box.style.cssText = "background:#fff; border-radius:8px; padding:16px 18px; width:min(320px,92vw); box-shadow:0 8px 28px rgba(0,0,0,.2);";
-  box.innerHTML = "<div style='font-weight:bold; margin-bottom:10px;'>插入表格</div>" +
+  box.innerHTML = "<div style='font-weight:bold; margin-bottom:10px;'>插入表格（光标处）</div>" +
     "<div style='display:flex; gap:12px; align-items:center; margin-bottom:8px; font-size:13px;'><label style='width:32px;'>列</label><input id='tblCols' type='number' min='1' max='12' value='2' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;'></div>" +
     "<div style='display:flex; gap:12px; align-items:center; margin-bottom:8px; font-size:13px;'><label style='width:32px;'>行</label><input id='tblRows' type='number' min='1' max='50' value='2' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;'></div>" +
-    "<div style='font-size:12px; color:var(--muted); margin-bottom:12px;'>第 1 行为表头。常用：2列×2行</div>" +
+    "<div style='font-size:12px; color:var(--muted); margin-bottom:12px;'>第 1 行为表头。插入到当前光标位置</div>" +
     "<div style='display:flex; gap:8px; justify-content:flex-end;'><button class='btn' id='tblCancel'>取消</button><button class='btn primary' id='tblOk'>插入</button></div>";
   mask.appendChild(box);
   document.body.appendChild(mask);
@@ -1382,18 +1514,11 @@ $("btnTable").onclick = () => {
   const insert = () => {
     const cols = Math.max(1, Math.min(12, parseInt(box.querySelector("#tblCols").value, 10) || 2));
     const rows = Math.max(1, Math.min(50, parseInt(box.querySelector("#tblRows").value, 10) || 2));
-    let html = "<table><thead><tr>";
-    for (let c = 0; c < cols; c++) html += "<th><br></th>";
-    html += "</tr></thead><tbody>";
-    for (let r = 0; r < rows - 1; r++) {
-      html += "<tr>";
-      for (let c = 0; c < cols; c++) html += "<td><br></td>";
-      html += "</tr>";
-    }
-    html += "</tbody></table><p><br></p>";
     close();
-    $("editor").focus();
-    document.execCommand("insertHTML", false, html);
+    const wrap = document.createElement("div");
+    wrap.innerHTML = buildTableHtml(cols, rows) + "<p><br></p>";
+    const nodes = [...wrap.childNodes];
+    insertNodesAtEditor(nodes, savedRange);
     const p = findPage();
     if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
