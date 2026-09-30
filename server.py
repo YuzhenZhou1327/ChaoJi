@@ -387,7 +387,7 @@ def main():
             sys.exit(1)
 
     if not find_frontend():
-        print("[错误] 未在 %s 找到 chaoji-v*.html（如 chaoji-v0.6.html）" % HERE)
+        print("[错误] 未在 %s 找到 chaoji-v*.html（如 chaoji-v1.0.html）" % HERE)
         print("       请把前端 HTML 和 server.py 放同一目录")
         sys.exit(1)
 
