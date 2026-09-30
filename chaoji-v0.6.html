@@ -50,17 +50,31 @@ button{font-family:inherit;}
 #pgList{flex:1; overflow-y:auto;}
 /* 编辑区 */
 #editorWrap{flex:1; display:flex; flex-direction:column; min-height:0; padding:0 30px 40px; overflow-y:auto;}
-#pgTitle{border:none; outline:none; font-size:24px; font-weight:bold; padding:18px 0 8px; background:transparent; color:var(--fg);}
+#editorHead{position:sticky; top:0; z-index:20; background:var(--bg); padding:8px 0 4px; border-bottom:1px solid var(--line); margin-bottom:12px;}
+#pgTitle{border:none; outline:none; font-size:24px; font-weight:bold; padding:10px 0 6px; background:transparent; color:var(--fg); width:100%;}
 #editor{flex:1 0 auto; min-height:300px; outline:none; font-size:15px; line-height:1.7; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px 24px; box-shadow:0 1px 3px rgba(0,0,0,.04);}
 #editor:focus{border-color:var(--accent);}
 #editor img{max-width:100%;}
+#editor a{color:var(--accent); text-decoration:underline; cursor:pointer;}
 #editor blockquote{border-left:3px solid var(--accent); padding-left:12px; color:var(--muted); margin:6px 0;}
-#editor h1{font-size:20px; margin:10px 0 4px;} #editor h2{font-size:17px; margin:8px 0 4px;}
+#editor h1{font-size:22px; margin:12px 0 6px; line-height:1.3;}
+#editor h2{font-size:18px; margin:10px 0 5px; line-height:1.3;}
+#editor h3{font-size:16px; margin:8px 0 4px;}
+#editor h4{font-size:15px; margin:8px 0 4px; color:#3a3a36;}
+#editor h5{font-size:14px; margin:6px 0 3px; color:#4a4a46;}
+#editor h6{font-size:13px; margin:6px 0 3px; color:var(--muted);}
+#editor code{font-family:Consolas,"Cascadia Mono",Monaco,"Courier New",monospace; font-size:.92em; background:#f2f1ec; color:#9c3b2e; border:1px solid #e4e2dc; border-radius:3px; padding:1px 5px;}
+#editor pre{margin:10px 0; padding:12px 14px; background:#2c2c28; color:#ebebe6; border-radius:6px; overflow-x:auto; line-height:1.55;}
+#editor pre code{display:block; background:transparent; color:inherit; padding:0; border:none; border-radius:0; font-size:13px; white-space:pre;}
 #editor ul,#editor ol{padding-left:1.6em; margin:4px 0;}
 #editor li{margin:2px 0;}
 #editor ul ul,#editor ol ol,#editor ul ol,#editor ol ul{margin:2px 0;}
-#toolbar{display:flex; gap:4px; padding:8px 0; flex-wrap:wrap;}
+#editor table{border-collapse:collapse; margin:8px 0; width:auto; max-width:100%;}
+#editor td,#editor th{border:1px solid var(--line); padding:6px 10px; min-width:48px;}
+#editor th{background:var(--accent-soft); font-weight:bold;}
+#toolbar{display:flex; gap:4px; padding:6px 0 2px; flex-wrap:wrap; align-items:center;}
 #toolbar .btn{padding:3px 10px; font-size:12.5px;}
+#toolbar select.btn{padding:3px 6px;}
 /* 空状态 */
 #emptyState{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; color:var(--muted); padding:40px;}
 #emptyState h2{color:var(--fg); font-size:18px;}
@@ -72,6 +86,20 @@ button{font-family:inherit;}
 #draftBanner{display:none; padding:8px 14px; background:#fff6dd; border-bottom:1px solid #e8d48a; font-size:13px;}
 #draftBanner button{margin-left:8px;}
 ::selection{background:#bfe0d8;}
+#printArea{display:none;}
+@media print {
+  body > *:not(#printArea){display:none !important;}
+  #printArea{display:block !important; padding:0; font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:#000;}
+  #printArea img{max-width:100%;}
+  #printArea blockquote{border-left:3pt solid #0f6f5c; padding-left:10pt; color:#555;}
+  #printArea code{font-family:Consolas,Monaco,monospace; background:#f4f4f4; padding:1px 4px;}
+  #printArea pre{background:#f4f4f4; padding:8pt 10pt; white-space:pre-wrap;}
+  #printArea pre code{background:none; padding:0;}
+  #printArea table{border-collapse:collapse; width:100%; margin:8pt 0;}
+  #printArea td,#printArea th{border:0.5pt solid #888; padding:4pt 6pt;}
+}
+#topbar .tb-group{display:flex; align-items:center; gap:6px;}
+#topbar .tb-sep{width:1px; height:22px; background:var(--line); margin:0 4px;}
 </style>
 </head>
 <body>
@@ -79,11 +107,16 @@ button{font-family:inherit;}
   <span class="logo">巢记</span>
   <span class="filestate" id="fileState">未打开文件</span>
   <span class="spacer"></span>
-  <button class="btn" id="btnOpen" title="打开已有 .nbk 笔记本文件">📂 打开</button>
-  <button class="btn" id="btnNew" title="新建空白笔记本（服务器模式存到数据目录；文件模式 Ctrl+S 时选位置）">➕ 新建</button>
-  <button class="btn" id="btnSave" title="Ctrl+S，静默写回原文件">💾 保存</button>
-  <button class="btn" id="btnExport" title="导出一份副本备份">导出备份</button>
-  <button class="btn" id="btnWord" title="把当前页面导出为 .doc（Word 可直接打开）">📄 导出本页 Word</button>
+  <div class="tb-group">
+    <button class="btn" id="btnOpen" title="打开已有 .nbk 笔记本文件">📂 打开</button>
+    <button class="btn" id="btnNew" title="新建空白笔记本（服务器模式存到数据目录；文件模式 Ctrl+S 时选位置）">➕ 新建</button>
+    <button class="btn primary" id="btnSave" title="Ctrl+S，静默写回原文件">💾 保存</button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <button class="btn" id="btnImportMd" title="导入 Markdown 文件为新页面">📥 导入</button>
+    <button class="btn" id="btnExportMenu" title="导出当前页 / 整本 / 备份">📤 导出 ▾</button>
+  </div>
 </div>
 
 <div id="draftBanner">检测到上次会话的未保存草稿 <button class="btn small" id="draftRestore">恢复草稿</button> <button class="btn small" id="draftDiscard">丢弃</button></div>
@@ -111,23 +144,34 @@ button{font-family:inherit;}
       </div>
     </div>
     <div id="editorWrap" style="display:none;">
+      <div id="editorHead">
       <div style="display:flex; align-items:baseline; gap:12px;">
         <input id="pgTitle" placeholder="页面标题">
         <span id="saveChip" style="font-size:11px; color:var(--muted); white-space:nowrap;"></span>
       </div>
       <div id="toolbar">
+        <select class="btn" id="blockLevel" title="段落/标题级别">
+          <option value="p">正文</option>
+          <option value="h1">标题 1</option>
+          <option value="h2">标题 2</option>
+          <option value="h3">标题 3</option>
+          <option value="h4">标题 4</option>
+          <option value="h5">标题 5</option>
+          <option value="h6">标题 6</option>
+          <option value="blockquote">引用</option>
+        </select>
         <button class="btn" data-cmd="bold"><b>B</b></button>
         <button class="btn" data-cmd="italic"><i>I</i></button>
         <button class="btn" data-cmd="underline"><u>U</u></button>
         <button class="btn" data-cmd="strikeThrough"><s>S</s></button>
-        <button class="btn" data-cmd="formatBlock:h1">H1</button>
-        <button class="btn" data-cmd="formatBlock:h2">H2</button>
-        <button class="btn" data-cmd="formatBlock:p">正文</button>
         <button class="btn" data-cmd="insertUnorderedList">• 列表</button>
         <button class="btn" data-cmd="insertOrderedList">1. 列表</button>
-        <button class="btn" data-cmd="formatBlock:blockquote">引用</button>
+        <button class="btn" id="btnInlineCode" title="行内代码">`码`</button>
+        <button class="btn" id="btnCodeBlock" title="代码块">```</button>
         <button class="btn" data-cmd="hiliteColor" title="高亮">🖍</button>
         <button class="btn" id="btnImg" title="插入图片">🖼 图片</button>
+        <button class="btn" id="btnTable" title="插入表格（默认 2 列，可改行列）">▦ 表格</button>
+      </div>
       </div>
       <div id="editor" contenteditable="true" spellcheck="false"></div>
     </div>
@@ -141,6 +185,8 @@ button{font-family:inherit;}
 </div>
 <div id="toast"></div>
 <input type="file" id="fileInput" accept=".nbk,application/json" style="display:none">
+<input type="file" id="mdInput" accept=".md,.markdown,text/markdown,text/plain" style="display:none">
+<div id="printArea"></div>
 
 <script>
 "use strict";
@@ -511,11 +557,22 @@ function newNb(name) { return { id: uid(), name, sections: [{ id: uid(), name: "
 $("btnOpen").onclick = openFile;
 $("btnOpenOrNew").onclick = openFile;   // 空态页「打开已有笔记本」
 $("btnSave").onclick = () => { if (serverMode) { saveActive(false); } else { ensureFileThen(() => saveActive(false)); } };
-$("btnExport").onclick = () => { state ? exportDownload() : toast("还没有内容"); };
-$("btnWord").onclick = () => {
-  const p = findPage();
-  if (!p) return toast("请先选中一个页面");
-  exportPageWord(p);
+$("btnImportMd").onclick = () => importMdFile();
+$("btnExportMenu").onclick = e => {
+  const needPage = () => {
+    const p = findPage();
+    if (!p) { toast("请先选中一个页面"); return null; }
+    return p;
+  };
+  ctxMenu({ clientX: e.clientX, clientY: e.clientY, preventDefault() {} }, [
+    ["📄 本页 Word", () => { const p = needPage(); if (p) exportPageWord(p); }],
+    ["Markdown 本页 .md", () => { const p = needPage(); if (p) exportPageMd(p); }],
+    ["TXT 本页纯文本", () => { const p = needPage(); if (p) exportPageTxt(p); }],
+    ["PDF 本页打印", () => { const p = needPage(); if (p) exportPagePdf(p); }],
+    [null, null],
+    ["📚 整本 Markdown", () => exportBookMd()],
+    ["💾 备份 .nbk", () => { state ? exportDownload() : toast("还没有内容"); }],
+  ]);
 };
 /* ---------- 当前页导出 Word (.doc, Word/WPS 直接打开) ----------
    MHTML 思路简化为 word 2000 html 格式：word 原生识别 mso 样式的 html，
@@ -565,6 +622,294 @@ function sanitizeForWord(html) {
     }
   });
   return d.innerHTML;
+}
+
+/* ================= Markdown 导入/导出（零依赖；格式只由工具栏操作） ================= */
+function mdInlineToHtml(s) {
+  let x = escHtml(s);
+  x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "<img alt=\"$1\" src=\"$2\">");
+  x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<a href=\"$2\">$1</a>");
+  x = x.replace(/`([^`]+)`/g, "<code>$1</code>");
+  x = x.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  x = x.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  x = x.replace(/~~([^~]+)~~/g, "<s>$1</s>");
+  return x;
+}
+function mdToHtml(md) {
+  const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let i = 0, inCode = false, codeBuf = [];
+  const listStack = [];
+  const closeLists = (toIndent = -1) => {
+    while (listStack.length && listStack[listStack.length - 1].indent > toIndent) {
+      const top = listStack.pop();
+      out.push(top.type === "ul" ? "</ul>" : "</ol>");
+      if (top.liOpen) out.push("</li>");
+    }
+    if (listStack.length && listStack[listStack.length - 1].liOpen && listStack[listStack.length - 1].indent === toIndent) {
+      out.push("</li>");
+      listStack[listStack.length - 1].liOpen = false;
+    }
+  };
+  const flushP = (buf) => {
+    if (buf.length) { out.push("<p>" + mdInlineToHtml(buf.join(" ")) + "</p>"); buf.length = 0; }
+  };
+  let para = [];
+  const closeSiblingLi = () => {
+    if (listStack.length && listStack[listStack.length - 1].liOpen) {
+      out.push("</li>");
+      listStack[listStack.length - 1].liOpen = false;
+    }
+  };
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (raw.trim().startsWith("```")) {
+      if (inCode) {
+        out.push("<pre><code>" + escHtml(codeBuf.join("\n")) + "</code></pre>");
+        codeBuf = []; inCode = false;
+      } else {
+        flushP(para); closeLists(); inCode = true;
+      }
+      i++; continue;
+    }
+    if (inCode) { codeBuf.push(raw); i++; continue; }
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { flushP(para); closeLists(); i++; continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      flushP(para); closeLists();
+      const lv = Math.min(6, h[1].length);
+      out.push("<h" + lv + ">" + mdInlineToHtml(h[2]) + "</h" + lv + ">");
+      i++; continue;
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line.trim())) {
+      flushP(para); closeLists(); out.push("<hr>"); i++; continue;
+    }
+    const bq = line.match(/^>\s?(.*)$/);
+    if (bq) {
+      flushP(para); closeLists();
+      out.push("<blockquote><p>" + mdInlineToHtml(bq[1]) + "</p></blockquote>");
+      i++; continue;
+    }
+    const li = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+    if (li) {
+      flushP(para);
+      const indent = Math.floor(li[1].replace(/\t/g, "  ").length / 2);
+      const type = /\d/.test(li[2]) ? "ol" : "ul";
+      while (listStack.length && listStack[listStack.length - 1].indent > indent) {
+        const top = listStack.pop();
+        out.push(top.type === "ul" ? "</ul>" : "</ol>");
+        if (top.liOpen) out.push("</li>");
+      }
+      if (!listStack.length || listStack[listStack.length - 1].indent < indent) {
+        if (listStack.length && listStack[listStack.length - 1].liOpen) {
+          // nested into open li
+        } else if (listStack.length) {
+          if (out[out.length - 1] === "</li>") out.pop();
+          listStack[listStack.length - 1].liOpen = true;
+        }
+        out.push(type === "ul" ? "<ul>" : "<ol>");
+        listStack.push({ type, indent, liOpen: false });
+      } else if (listStack[listStack.length - 1].type !== type) {
+        const top = listStack.pop();
+        out.push(top.type === "ul" ? "</ul>" : "</ol>");
+        if (top.liOpen) out.push("</li>");
+        out.push(type === "ul" ? "<ul>" : "<ol>");
+        listStack.push({ type, indent, liOpen: false });
+      } else {
+        closeSiblingLi();
+      }
+      out.push("<li>" + mdInlineToHtml(li[3]));
+      listStack[listStack.length - 1].liOpen = true;
+      i++; continue;
+    }
+    const isTableRow = (ln) => ln.trim().startsWith("|") && ln.trim().endsWith("|");
+    const splitRow = (ln) => ln.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+    if (isTableRow(line) && i + 1 < lines.length && /\|?[\s:|-]+\|?/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      flushP(para); closeLists();
+      const head = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTableRow(lines[i]) && lines[i].trim()) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      out.push("<table><thead><tr>" + head.map(c => "<th>" + mdInlineToHtml(c) + "</th>").join("") + "</tr></thead><tbody>");
+      rows.forEach(r => {
+        out.push("<tr>" + head.map((_, ci) => "<td>" + mdInlineToHtml(r[ci] || "") + "</td>").join("") + "</tr>");
+      });
+      out.push("</tbody></table>");
+      continue;
+    }
+    closeLists();
+    para.push(line.trim());
+    i++;
+  }
+  if (inCode && codeBuf.length) out.push("<pre><code>" + escHtml(codeBuf.join("\n")) + "</code></pre>");
+  flushP(para); closeLists();
+  return out.join("");
+}
+function htmlToText(html) {
+  const d = document.createElement("div");
+  d.innerHTML = html || "";
+  d.querySelectorAll("script,style").forEach(n => n.remove());
+  d.querySelectorAll("table").forEach(tbl => {
+    const rows = [...tbl.querySelectorAll("tr")].map(tr =>
+      [...tr.children].filter(c => c.tagName === "TD" || c.tagName === "TH").map(c => (c.textContent || "").trim())
+    );
+    const cols = rows.reduce((m, r) => Math.max(m, r.length), 0);
+    const widths = Array.from({ length: cols }, (_, i) => rows.reduce((m, r) => Math.max(m, (r[i] || "").length), 0));
+    const text = rows.map(r => {
+      const cells = r.slice();
+      while (cells.length < cols) cells.push("");
+      return cells.map((c, i) => (c + " ".repeat(widths[i])).slice(0, widths[i])).join("  ");
+    }).join("\n") + "\n";
+    tbl.replaceWith(document.createTextNode(text));
+  });
+  d.querySelectorAll("p,div,br,li,h1,h2,h3,h4,h5,h6,blockquote,pre").forEach(n => {
+    n.appendChild(document.createTextNode("\n"));
+  });
+  return (d.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+}
+function htmlToMd(html) {
+  const root = document.createElement("div");
+  root.innerHTML = html || "";
+  function inlineMd(node) {
+    if (node.nodeType === 3) return node.nodeValue.replace(/\n+/g, " ");
+    if (node.nodeType !== 1) return "";
+    const tag = node.tagName;
+    const kids = () => [...node.childNodes].map(inlineMd).join("");
+    if (tag === "BR") return "\n";
+    if (tag === "STRONG" || tag === "B") return "**" + kids().trim() + "**";
+    if (tag === "EM" || tag === "I") return "*" + kids().trim() + "*";
+    if (tag === "S" || tag === "DEL" || tag === "STRIKE") return "~~" + kids().trim() + "~~";
+    if (tag === "CODE") return "`" + node.textContent + "`";
+    if (tag === "A") return "[" + kids() + "](" + (node.getAttribute("href") || "") + ")";
+    if (tag === "IMG") return "![" + (node.getAttribute("alt") || "") + "](" + (node.getAttribute("src") || "") + ")";
+    return kids();
+  }
+  function blockMd(node, depth) {
+    if (node.nodeType === 3) return node.nodeValue.trim() ? inlineMd(node) + "\n\n" : "";
+    if (node.nodeType !== 1) return "";
+    const tag = node.tagName;
+    const pad = "  ".repeat(depth);
+    if (/^H[1-6]$/.test(tag)) return pad + "#".repeat(+tag[1]) + " " + inlineMd(node).trim() + "\n\n";
+    if (tag === "P") return pad + inlineMd(node).trim() + "\n\n";
+    if (tag === "HR") return "---\n\n";
+    if (tag === "PRE") return "```\n" + node.textContent.replace(/\n$/, "") + "\n```\n\n";
+    if (tag === "BLOCKQUOTE") {
+      const inner = [...node.childNodes].map(n => blockMd(n, 0)).join("").trim().split("\n").map(l => "> " + l).join("\n");
+      return inner + "\n\n";
+    }
+    if (tag === "TABLE") {
+      const rows = [...node.querySelectorAll("tr")];
+      if (!rows.length) return "";
+      const grid = rows.map(tr => [...tr.children].filter(c => c.tagName === "TD" || c.tagName === "TH")
+        .map(c => inlineMd(c).replace(/\|/g, "\\|").replace(/\n/g, " ").trim()));
+      const cols = Math.max(...grid.map(r => r.length));
+      const norm = grid.map(r => { const x = r.slice(); while (x.length < cols) x.push(""); return x; });
+      const line = cells => "| " + cells.join(" | ") + " |";
+      return [line(norm[0]), line(norm[0].map(() => "---"))].concat(norm.slice(1).map(line)).join("\n") + "\n\n";
+    }
+    if (tag === "UL" || tag === "OL") {
+      let n = 0;
+      return [...node.children].filter(el => el.tagName === "LI").map(li => {
+        n++;
+        const mark = tag === "OL" ? n + ". " : "- ";
+        const parts = [...li.childNodes];
+        let head = "", sub = [];
+        parts.forEach(ch => {
+          if (ch.nodeType === 1 && (ch.tagName === "UL" || ch.tagName === "OL")) sub.push(ch);
+          else head += inlineMd(ch);
+        });
+        let s = pad + mark + head.trim() + "\n";
+        sub.forEach(ul => { s += blockMd(ul, depth + 1); });
+        return s;
+      }).join("") + (depth === 0 ? "\n" : "");
+    }
+    return [...node.childNodes].map(n => blockMd(n, depth)).join("");
+  }
+  return [...root.childNodes].map(n => blockMd(n, 0)).join("").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+function downloadText(filename, text, mime) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: mime || "text/plain;charset=utf-8" }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function safeFileName(s) {
+  return (s || "未命名").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
+}
+function exportPageMd(p) {
+  const md = "# " + (p.title || "无标题") + "\n\n" + htmlToMd(p.html || "");
+  const name = safeFileName(p.title || "页面") + ".md";
+  downloadText(name, md, "text/markdown;charset=utf-8");
+  toast("✓ 已导出 " + name);
+}
+function exportPageTxt(p) {
+  const txt = (p.title || "无标题") + "\n\n" + htmlToText(p.html || "") + "\n";
+  const name = safeFileName(p.title || "页面") + ".txt";
+  downloadText(name, txt, "text/plain;charset=utf-8");
+  toast("✓ 已导出 " + name);
+}
+function exportPagePdf(p) {
+  const area = $("printArea");
+  area.innerHTML = "<h1>" + escHtml(p.title || "无标题") + "</h1>" + (p.html || "");
+  toast("在打印对话框中选择「另存为 PDF」");
+  setTimeout(() => window.print(), 120);
+}
+function exportBookMd() {
+  if (!state) return toast("还没有内容");
+  const parts = ["# " + (currentNbName() || "巢记笔记本") + "\n"];
+  state.notebooks.forEach(nb => {
+    parts.push("\n## 笔记本：" + nb.name + "\n");
+    nb.sections.forEach(sec => {
+      parts.push("\n### 分区：" + sec.name + "\n");
+      sec.pages.forEach(p => {
+        parts.push("\n#### " + (p.title || "无标题") + "\n");
+        parts.push(htmlToMd(p.html || ""));
+      });
+    });
+  });
+  const name = safeFileName(currentNbName() || "巢记") + "-整本.md";
+  downloadText(name, parts.join("\n"), "text/markdown;charset=utf-8");
+  toast("✓ 已导出整本 " + name);
+}
+async function importMdFile() {
+  const file = await new Promise(res => {
+    const inp = $("mdInput");
+    inp.onchange = () => { res(inp.files[0] || null); inp.value = ""; };
+    inp.click();
+  });
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const html = mdToHtml(text);
+    const title = (file.name.replace(/\.(md|markdown)$/i, "") || "导入页面");
+    if (!state) initBlank();
+    if (!state.notebooks.length) {
+      const nb = newNb("我的笔记本");
+      state.notebooks.push(nb);
+      sel = { nb: nb.id, sec: nb.sections[0].id, pg: null };
+    }
+    let sec = findSec(sel.nb, sel.sec);
+    if (!sec) {
+      const nb = findNb(sel.nb) || state.notebooks[0];
+      if (!nb.sections.length) nb.sections.push({ id: uid(), name: "未命名分区", pages: [] });
+      sel.nb = nb.id;
+      sel.sec = nb.sections[0].id;
+      sec = nb.sections[0];
+    }
+    const p = { id: uid(), title, html, created: Date.now(), updated: Date.now() };
+    sec.pages.unshift(p);
+    sel.pg = p.id;
+    markDirty();
+    renderAll();
+    toast("✓ 已导入 " + file.name + " 为页面「" + title + "」");
+  } catch (e) {
+    toast("导入失败：" + e.message);
+  }
 }
 
 
@@ -947,24 +1292,153 @@ document.querySelectorAll("#toolbar [data-cmd]").forEach(b => {
     const cmd = b.dataset.cmd;
     $("editor").focus();
     if (cmd === "hiliteColor") document.execCommand("styleWithCSS", false, true), document.execCommand("hiliteColor", false, "#fff3a3");
-    else if (cmd === "formatBlock:blockquote") {
-      // 再点「引用」取消：已在 blockquote 里则拆掉
-      const tag = ctxBlockTag(window.getSelection().anchorNode);
-      if (tag === "BLOCKQUOTE") {
-        let n = window.getSelection().anchorNode;
-        if (n && n.nodeType === 3) n = n.parentElement;
-        while (n && n !== $("editor") && n.tagName !== "BLOCKQUOTE") n = n.parentElement;
-        if (n && n.tagName === "BLOCKQUOTE") unwrapTag(n);
-        else document.execCommand("formatBlock", false, "p");
-      } else {
-        document.execCommand("formatBlock", false, "blockquote");
-      }
-    }
-    else if (cmd.startsWith("formatBlock:")) document.execCommand("formatBlock", false, cmd.split(":")[1]);
     else document.execCommand(cmd, false, null);
     const p = findPage();
     if (p) { p.html = $("editor").innerHTML; markDirty(); }
   };
+});
+/* 标题级别下拉 */
+$("blockLevel").onchange = () => {
+  const v = $("blockLevel").value;
+  $("editor").focus();
+  if (v === "blockquote") {
+    const tag = ctxBlockTag(window.getSelection().anchorNode);
+    if (tag === "BLOCKQUOTE") {
+      let n = window.getSelection().anchorNode;
+      if (n && n.nodeType === 3) n = n.parentElement;
+      while (n && n !== $("editor") && n.tagName !== "BLOCKQUOTE") n = n.parentElement;
+      if (n && n.tagName === "BLOCKQUOTE") unwrapTag(n);
+      else document.execCommand("formatBlock", false, "p");
+    } else {
+      document.execCommand("formatBlock", false, "blockquote");
+    }
+  } else {
+    document.execCommand("formatBlock", false, v);
+  }
+  const p = findPage();
+  if (p) { p.html = $("editor").innerHTML; markDirty(); }
+};
+/* 行内代码 / 代码块 — 仅工具栏 */
+function wrapInlineTag(tag) {
+  const sel = window.getSelection();
+  $("editor").focus();
+  if (!sel.rangeCount) return;
+  const text = sel.isCollapsed ? "" : String(sel);
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (text) {
+    document.execCommand("insertHTML", false, "<" + tag + ">" + esc(text) + "</" + tag + ">");
+  } else {
+    document.execCommand("insertHTML", false, "<" + tag + ">&#8203;</" + tag + ">");
+  }
+}
+$("btnInlineCode").onclick = () => {
+  wrapInlineTag("code");
+  const p = findPage();
+  if (p) { p.html = $("editor").innerHTML; markDirty(); }
+};
+$("btnCodeBlock").onclick = () => {
+  $("editor").focus();
+  const sel = window.getSelection();
+  const text = sel && !sel.isCollapsed ? String(sel) : "在这里输入代码";
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.textContent = text;
+  pre.appendChild(code);
+  const after = document.createElement("p");
+  after.appendChild(document.createElement("br"));
+  if (sel.rangeCount) {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(after);
+    range.insertNode(pre);
+    const caret = document.createRange();
+    caret.selectNodeContents(code);
+    caret.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  } else {
+    $("editor").appendChild(pre);
+    $("editor").appendChild(after);
+  }
+  const p = findPage();
+  if (p) { p.html = $("editor").innerHTML; markDirty(); }
+};
+$("btnTable").onclick = () => {
+  const mask = document.createElement("div");
+  mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:300; display:flex; align-items:center; justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#fff; border-radius:8px; padding:16px 18px; width:min(320px,92vw); box-shadow:0 8px 28px rgba(0,0,0,.2);";
+  box.innerHTML = "<div style='font-weight:bold; margin-bottom:10px;'>插入表格</div>" +
+    "<div style='display:flex; gap:12px; align-items:center; margin-bottom:8px; font-size:13px;'><label style='width:32px;'>列</label><input id='tblCols' type='number' min='1' max='12' value='2' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;'></div>" +
+    "<div style='display:flex; gap:12px; align-items:center; margin-bottom:8px; font-size:13px;'><label style='width:32px;'>行</label><input id='tblRows' type='number' min='1' max='50' value='2' style='flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:5px;'></div>" +
+    "<div style='font-size:12px; color:var(--muted); margin-bottom:12px;'>第 1 行为表头。常用：2列×2行</div>" +
+    "<div style='display:flex; gap:8px; justify-content:flex-end;'><button class='btn' id='tblCancel'>取消</button><button class='btn primary' id='tblOk'>插入</button></div>";
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.onclick = e => { if (e.target === mask) close(); };
+  box.querySelector("#tblCancel").onclick = close;
+  box.querySelector("#tblCols").focus();
+  const insert = () => {
+    const cols = Math.max(1, Math.min(12, parseInt(box.querySelector("#tblCols").value, 10) || 2));
+    const rows = Math.max(1, Math.min(50, parseInt(box.querySelector("#tblRows").value, 10) || 2));
+    let html = "<table><thead><tr>";
+    for (let c = 0; c < cols; c++) html += "<th><br></th>";
+    html += "</tr></thead><tbody>";
+    for (let r = 0; r < rows - 1; r++) {
+      html += "<tr>";
+      for (let c = 0; c < cols; c++) html += "<td><br></td>";
+      html += "</tr>";
+    }
+    html += "</tbody></table><p><br></p>";
+    close();
+    $("editor").focus();
+    document.execCommand("insertHTML", false, html);
+    const p = findPage();
+    if (p) { p.html = $("editor").innerHTML; markDirty(); }
+  };
+  box.querySelector("#tblOk").onclick = insert;
+  box.onkeydown = e => {
+    if (e.key === "Enter") insert();
+    if (e.key === "Escape") close();
+  };
+};
+/* 链接：Ctrl+点击打开；普通点击菜单 */
+function openHref(href) {
+  try {
+    if (/^javascript:/i.test(href)) return toast("不支持的链接");
+    window.open(href, "_blank", "noopener,noreferrer");
+  } catch (e) { toast("无法打开链接：" + e.message); }
+}
+$("editor").addEventListener("click", e => {
+  const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+  if (!a) return;
+  e.preventDefault();
+  const href = a.getAttribute("href") || "";
+  if (e.ctrlKey || e.metaKey || e.altKey) { openHref(href); return; }
+  closeCtx();
+  const m = document.createElement("div");
+  m.style.cssText = "position:fixed; z-index:200; background:#fff; border:1px solid var(--line); box-shadow:0 4px 14px rgba(0,0,0,.18); border-radius:6px; padding:4px 0; min-width:140px; font-size:13px;";
+  const add = (label, fn) => {
+    const it = document.createElement("div");
+    it.textContent = label;
+    it.style.cssText = "padding:7px 16px; cursor:pointer; white-space:nowrap;";
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = () => { closeCtx(); fn(); };
+    m.appendChild(it);
+  };
+  add("🔗 打开链接", () => openHref(href));
+  add("📋 复制地址", () => {
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(href).then(() => toast("✓ 已复制链接"));
+    else toast(href);
+  });
+  document.body.appendChild(m);
+  const rect = m.getBoundingClientRect();
+  let x = e.clientX, y = e.clientY;
+  if (x + rect.width > window.innerWidth - 6) x = window.innerWidth - rect.width - 6;
+  if (y + rect.height > window.innerHeight - 6) y = window.innerHeight - rect.height - 6;
+  m.style.left = x + "px"; m.style.top = y + "px";
+  ctxEl = m;
 });
 $("btnImg").onclick = () => {
   const inp = document.createElement("input");
