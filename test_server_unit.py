@@ -15,6 +15,9 @@ def expect(cond, msg):
 # valid_nbk_name
 expect(valid_nbk_name("我的笔记本.nbk"), "中文文件名合法")
 expect(valid_nbk_name("note-1_v2.nbk"), "ASCII 合法")
+expect(valid_nbk_name("工作笔记 (2026) [副本].nbk"), "含空格与括号的文件名合法")
+expect(not valid_nbk_name(".nbk"), "拒绝空主文件名 .nbk")
+expect(not valid_nbk_name(" leading.nbk"), "拒绝空格开头")
 expect(not valid_nbk_name("../etc.nbk"), "拒绝 ..")
 expect(not valid_nbk_name("a/b.nbk"), "拒绝路径分隔 /")
 expect(not valid_nbk_name("a\\b.nbk"), "拒绝路径分隔 \\")

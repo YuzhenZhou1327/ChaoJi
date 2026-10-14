@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-巢记 ChaoJi 本地服务器模式 · 极简依赖版 v2
+巢记 ChaoJi 本地服务器模式 · 极简依赖版 v2.1
 ==========================================
 设计目标：公司内网"有 python3 但可能缺标准库、无 sudo"的机器也能跑。
 
@@ -74,16 +74,23 @@ def find_frontend():
 
 
 def valid_nbk_name(name):
-    """不用 re 的文件名白名单：字母/数字/下划线/中文/点/连字符，.nbk 结尾，禁路径分隔"""
-    if not name or not name.endswith(".nbk") or len(name) > 200:
+    """不用 re 的文件名白名单：支持字母/数字/中文及常见安全符号（含空格、括号），.nbk 结尾，禁路径穿越与危险字符"""
+    if not name or not name.endswith(".nbk") or len(name) > 200 or len(name) <= 4:
         return False
     if "/" in name or "\\" in name or ".." in name:
         return False
-    if name.startswith("."):
+    if name.startswith(".") or name.startswith(" "):
         return False
+    stem = name[:-4]
+    if not stem or stem.endswith(" ") or stem.endswith("."):
+        return False
+    forbidden = '<>:"/\\|?*'
+    safe_punct = "-._ ()[]+~@#%&="
     for ch in name:
         o = ord(ch)
-        if not (ch in "-._" or 0x30 <= o <= 0x39 or 0x41 <= o <= 0x5A
+        if o < 0x20 or o == 0x7F or ch in forbidden:
+            return False
+        if not (ch in safe_punct or 0x30 <= o <= 0x39 or 0x41 <= o <= 0x5A
                 or 0x61 <= o <= 0x7A or o >= 0x80):
             return False
     return True
@@ -99,8 +106,7 @@ def percent_decode(s):
         if c == "%" and i + 2 < len(s) and s[i + 1] in HEX and s[i + 2] in HEX:
             # 按 UTF-8 字节解码（收集连续的 %XX 再统一 decode）
             bts = []
-            while i + 2 < len(s) + 1 and i < len(s) and s[i] == "%" \
-                    and i + 2 < len(s) and s[i + 1] in HEX and s[i + 2] in HEX:
+            while i + 2 < len(s) and s[i] == "%" and s[i + 1] in HEX and s[i + 2] in HEX:
                 bts.append(int(s[i + 1:i + 3], 16))
                 i += 3
             try:
@@ -117,10 +123,13 @@ def percent_decode(s):
 
 def parse_http_request(conn):
     """读一个 HTTP 请求，返回 (method, path, headers, body) 或 None"""
-    conn.settimeout(10)
+    conn.settimeout(15)
     data = b""
     while b"\r\n\r\n" not in data and len(data) < 65536:
-        c = conn.recv(4096)
+        try:
+            c = conn.recv(4096)
+        except Exception:
+            break
         if not c:
             break
         data += c
@@ -141,8 +150,10 @@ def parse_http_request(conn):
         cl = int(headers.get("content-length", "0") or 0)
     except ValueError:
         cl = 0
-    while len(body) < cl and cl < 220 * 1024 * 1024:
-        c = conn.recv(65536)
+    if cl > 220 * 1024 * 1024:
+        return method, target, headers, None
+    while len(body) < cl:
+        c = conn.recv(min(65536, cl - len(body)))
         if not c:
             break
         body += c
@@ -153,8 +164,8 @@ def parse_http_request(conn):
 
 
 def http_response(conn, code, body, ctype="application/json; charset=utf-8"):
-    reason = {200: "OK", 400: "Bad Request", 404: "Not Found",
-              405: "Method Not Allowed", 500: "Server Error"}.get(code, "OK")
+    reason = {200: "OK", 204: "No Content", 400: "Bad Request", 404: "Not Found",
+              405: "Method Not Allowed", 413: "Payload Too Large", 500: "Server Error"}.get(code, "OK")
     head = ("HTTP/1.1 %d %s\r\n" % (code, reason)) + \
         ("Content-Type: %s\r\n" % ctype) + \
         ("Content-Length: %d\r\n" % len(body)) + \
@@ -170,7 +181,7 @@ class MiniHTTPServer:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((host, port))
-        self.sock.listen(8)
+        self.sock.listen(16)
         self.port = self.sock.getsockname()[1]
 
     def serve_forever(self):
@@ -189,10 +200,10 @@ class MiniHTTPServer:
             if req:
                 self.handler(req[0], req[1], req[2], req[3], conn)
             else:
-                http_response(conn, 400, b'{"error":"bad request"}')
+                http_response(conn, 400, b'{"ok":false,"error":"bad request"}')
         except Exception as e:
             try:
-                msg = ('{"error":"%s"}' % str(e).replace('"', "'")).encode("utf-8", "replace")
+                msg = ('{"ok":false,"error":"%s"}' % json_escape(str(e))).encode("utf-8", "replace")
                 http_response(conn, 500, msg)
             except Exception:
                 pass
@@ -206,8 +217,10 @@ class MiniHTTPServer:
 # ---------- 路由 ----------
 
 def route(method, path, headers, body, conn):
+    if method == "OPTIONS":
+        return http_response(conn, 204, b"", "text/plain")
     if method not in ("GET", "POST"):
-        return http_response(conn, 405, b'{"error":"method not allowed"}')
+        return http_response(conn, 405, b'{"ok":false,"error":"method not allowed"}')
 
     if path in ("/", "/index.html"):
         fn = find_frontend()
@@ -219,10 +232,10 @@ def route(method, path, headers, body, conn):
             return http_response(conn, 200, f.read(), "text/html; charset=utf-8")
 
     if path == "/favicon.ico":
-        return http_response(conn, 404, b"", "text/plain")
+        return http_response(conn, 204, b"", "image/x-icon")
 
     if path == "/api/ping" and method == "GET":
-        resp = '{"ok":true,"mode":"server","dataDir":"%s"}' % DATA_DIR.replace("\\", "/")
+        resp = '{"ok":true,"mode":"server","dataDir":"%s"}' % json_escape(DATA_DIR.replace("\\", "/"))
         return http_response(conn, 200, resp.encode("utf-8"))
 
     if path == "/api/list" and method == "GET":
@@ -234,11 +247,21 @@ def route(method, path, headers, body, conn):
     if path.startswith("/api/save/") and method == "POST":
         return api_save(percent_decode(path[len("/api/save/"):]), body, conn)
 
+    if path.startswith("/api/delete/") and method == "POST":
+        return api_delete(percent_decode(path[len("/api/delete/"):]), conn)
+
+    if path.startswith("/api/rename/") and method == "POST":
+        rest = path[len("/api/rename/"):]
+        if "/" not in rest:
+            return http_response(conn, 400, b'{"ok":false,"error":"missing new name"}')
+        old_enc, new_enc = rest.split("/", 1)
+        return api_rename(percent_decode(old_enc), percent_decode(new_enc), conn)
+
     # 兼容旧版前端 POST /api/save {file, state} —— 需要 json；若 json 缺失则要求新路径
     if path == "/api/save" and method == "POST":
         return api_save_jsonbody(body, conn)
 
-    return http_response(conn, 404, b'{"error":"not found"}')
+    return http_response(conn, 404, b'{"ok":false,"error":"not found"}')
 
 
 def json_escape(s):
@@ -264,9 +287,11 @@ def api_list(conn):
     except OSError:
         names = []
     for fn in names:
-        if not fn.endswith(".nbk"):
+        if not fn.endswith(".nbk") or not valid_nbk_name(fn):
             continue
         full = os.path.join(DATA_DIR, fn)
+        if not os.path.isfile(full):
+            continue
         try:
             mt = os.path.getmtime(full)
             ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mt)) if time else ""
@@ -278,7 +303,7 @@ def api_list(conn):
             size = 0
         items.append('{"file":"%s","size":%d,"mtime":"%s"}'
                      % (json_escape(fn), size, json_escape(ts)))
-    return http_response(conn, 200, ('{"ok":true,"items":[%s]}' % ",".join(items)).encode())
+    return http_response(conn, 200, ('{"ok":true,"items":[%s]}' % ",".join(items)).encode("utf-8"))
 
 
 def safe_path(name):
@@ -297,25 +322,33 @@ def atomic_write(full, data):
 def api_load(name, conn):
     full = safe_path(name)
     if not full or not os.path.exists(full):
-        return http_response(conn, 404, b'{"error":"file not found"}')
-    with open(full, "rb") as f:
-        return http_response(conn, 200,
-            ('{"ok":true,"file":"%s","state":' % name).encode() + f.read() + b"}")
-    # 注：state 直接内嵌文件字节（文件本身是合法 JSON object），省掉服务端 JSON 解析
+        return http_response(conn, 404, b'{"ok":false,"error":"file not found"}')
+    try:
+        with open(full, "rb") as f:
+            raw = f.read().strip()
+    except OSError as e:
+        return http_response(conn, 500,
+            ('{"ok":false,"error":"read failed: %s"}' % json_escape(str(e))).encode("utf-8"))
+    if not raw or not (raw.startswith(b"{") and raw.endswith(b"}")):
+        raw = b'{"app":"chaoji","ver":1,"notebooks":[]}'
+    prefix = ('{"ok":true,"file":"%s","state":' % json_escape(name)).encode("utf-8")
+    return http_response(conn, 200, prefix + raw + b"}")
 
 
 def api_save(name, body, conn):
     full = safe_path(name)
     if not full:
         return http_response(conn, 400,
-            "文件名不合法或未以 .nbk 结尾（禁止路径分隔与特殊字符）".encode("utf-8"))
-    if len(body) > 200 * 1024 * 1024:
-        return http_response(conn, 400, b'{"error":"body too large"}')
-    # body 即 state 的 JSON 字节（由前端 JSON.stringify 产生），服务端不解析直接原子写
+            '{"ok":false,"error":"文件名不合法或未以 .nbk 结尾（禁止路径分隔与特殊字符）"}'.encode("utf-8"))
+    if body is None or len(body) > 200 * 1024 * 1024:
+        return http_response(conn, 413, b'{"ok":false,"error":"body too large"}')
+    stripped = body.strip()
+    if not stripped or not (stripped.startswith(b"{") and stripped.endswith(b"}")):
+        return http_response(conn, 400, b'{"ok":false,"error":"invalid state json payload"}')
     tmp = full + ".tmp"
     try:
         with open(tmp, "wb") as f:
-            f.write(body)
+            f.write(stripped)
         os.replace(tmp, full)
     except OSError as e:
         if os.path.exists(tmp):
@@ -324,9 +357,39 @@ def api_save(name, body, conn):
             except OSError:
                 pass
         return http_response(conn, 500,
-            ('{"error":"save failed: %s"}' % str(e).replace('"', "'")).encode("utf-8", "replace"))
+            ('{"ok":false,"error":"save failed: %s"}' % json_escape(str(e))).encode("utf-8", "replace"))
     return http_response(conn, 200,
-        ('{"ok":true,"file":"%s","savedAt":"%s"}' % (name, now_str())).encode())
+        ('{"ok":true,"file":"%s","savedAt":"%s"}' % (json_escape(name), json_escape(now_str()))).encode("utf-8"))
+
+
+def api_delete(name, conn):
+    full = safe_path(name)
+    if not full or not os.path.exists(full):
+        return http_response(conn, 404, b'{"ok":false,"error":"file not found"}')
+    try:
+        os.remove(full)
+    except OSError as e:
+        return http_response(conn, 500,
+            ('{"ok":false,"error":"delete failed: %s"}' % json_escape(str(e))).encode("utf-8"))
+    return http_response(conn, 200, ('{"ok":true,"deleted":"%s"}' % json_escape(name)).encode("utf-8"))
+
+
+def api_rename(old_name, new_name, conn):
+    old_full = safe_path(old_name)
+    new_full = safe_path(new_name)
+    if not old_full or not new_full:
+        return http_response(conn, 400, b'{"ok":false,"error":"invalid file name"}')
+    if not os.path.exists(old_full):
+        return http_response(conn, 404, b'{"ok":false,"error":"source file not found"}')
+    if os.path.exists(new_full) and old_full != new_full:
+        return http_response(conn, 400, b'{"ok":false,"error":"target file already exists"}')
+    try:
+        os.replace(old_full, new_full)
+    except OSError as e:
+        return http_response(conn, 500,
+            ('{"ok":false,"error":"rename failed: %s"}' % json_escape(str(e))).encode("utf-8"))
+    return http_response(conn, 200,
+        ('{"ok":true,"oldFile":"%s","file":"%s"}' % (json_escape(old_name), json_escape(new_name))).encode("utf-8"))
 
 
 def api_save_jsonbody(body, conn):
@@ -335,15 +398,15 @@ def api_save_jsonbody(body, conn):
         import json
     except ImportError:
         return http_response(conn, 500,
-            '{"error":"此环境缺 json 模块，请升级前端或换完整 Python"}'.encode("utf-8"))
+            '{"ok":false,"error":"此环境缺 json 模块，请升级前端或换完整 Python"}'.encode("utf-8"))
     try:
         payload = json.loads(body.decode("utf-8"))
         name = payload.get("file", "")
         state = payload.get("state")
     except Exception:
-        return http_response(conn, 400, b'{"error":"bad json body"}')
+        return http_response(conn, 400, b'{"ok":false,"error":"bad json body"}')
     if not isinstance(state, dict):
-        return http_response(conn, 400, b'{"error":"state must be object"}')
+        return http_response(conn, 400, b'{"ok":false,"error":"state must be object"}')
     data = json.dumps(state, ensure_ascii=False).encode("utf-8")
     return api_save(name, data, conn)
 
@@ -387,7 +450,7 @@ def main():
             sys.exit(1)
 
     if not find_frontend():
-        print("[错误] 未在 %s 找到 chaoji-v*.html（如 chaoji-v1.0.html）" % HERE)
+        print("[错误] 未在 %s 找到 chaoji-v*.html（如 chaoji-v2.0.html）" % HERE)
         print("       请把前端 HTML 和 server.py 放同一目录")
         sys.exit(1)
 
@@ -402,7 +465,7 @@ def main():
         srv = MiniHTTPServer("127.0.0.1", free, route)
 
     url = "http://127.0.0.1:%d/" % srv.port
-    print("巢记服务器模式已启动（极简依赖版 v2）")
+    print("巢记服务器模式已启动（极简依赖版 v2.1）")
     print("  地址      : " + url)
     print("  数据目录  : %s" % DATA_DIR)
     if threading is None:
