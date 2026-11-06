@@ -1,0 +1,19 @@
+# 巢记 ChaoJi · 测试依赖
+# =============================================================================
+# 仅 E2E（test_e2e_ui.py）需要第三方依赖；单元测试/集成测试只用 Python 标准库。
+#
+# 安装（推荐在仓库外建独立 venv，避免污染系统 Python）：
+#   python -m venv D:\dsh\tmp\chaoji-e2e\venv
+#   D:\dsh\tmp\chaoji-e2e\venv\Scripts\python.exe -m pip install -r requirements-test.txt
+#
+# 浏览器：
+#   E2E 直接使用系统已安装的 Google Chrome（chromium.launch(channel="chrome")），
+#   也可用环境变量 CHAOJI_CHROME 指定 Chrome/Edge 可执行文件路径。
+#   **无需** 执行 `playwright install`（不会下载浏览器，本机也不需要 Node.js）。
+#
+# 运行：
+#   python run_all_tests.py        # 一键跑 unit + integration(若存在) + E2E
+#   python test_e2e_ui.py          # 只跑 E2E（在装有 playwright 的 Python 下）
+# =============================================================================
+playwright>=1.40        ; python_version >= "3.9"
+# 本机验证版本：playwright 1.64.1 + 系统 Chrome 129（Windows 11 / Python 3.14）

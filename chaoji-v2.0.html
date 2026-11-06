@@ -943,8 +943,8 @@ body.wide-editor .editor-container { max-width: 100%; }
     z-index: 30;
     box-shadow: var(--shadow-lg);
   }
-  .col1 { left: 0; width: 210px; }
-  .col2 { left: 210px; width: 230px; }
+  .col1 { left: 0; width: min(210px, 56vw); }
+  .col2 { left: min(210px, 56vw); right: 0; width: auto; }
   body.mobile-nav-open #mobileBackdrop { display: block; }
   body:not(.mobile-nav-open) .col1,
   body:not(.mobile-nav-open) .col2 {
@@ -1226,12 +1226,12 @@ body.wide-editor .editor-container { max-width: 100%; }
   <div class="col col1">
     <div class="sect-head">
       <span>笔记本 (当前文件内)</span>
-      <span class="add" id="addNb" title="在当前文件内新增笔记本">＋</span>
+      <span class="add" id="addNb" role="button" tabindex="0" aria-label="新增笔记本" title="在当前文件内新增笔记本">＋</span>
     </div>
     <div id="nbList"></div>
     <div class="sect-head" id="secHead">
       <span id="secHeadLabel">└ 分区</span>
-      <span class="add" id="addSec" title="在当前笔记本新建分区">＋</span>
+      <span class="add" id="addSec" role="button" tabindex="0" aria-label="新建分区" title="在当前笔记本新建分区">＋</span>
     </div>
     <div id="secList"></div>
   </div>
@@ -1240,7 +1240,7 @@ body.wide-editor .editor-container { max-width: 100%; }
   <div class="col col2">
     <div class="sect-head" style="padding:10px 12px 6px;">
       <span>页面列表</span>
-      <span class="add" id="addPg" title="新建页面 (Ctrl+N)">＋</span>
+      <span class="add" id="addPg" role="button" tabindex="0" aria-label="新建页面" title="新建页面 (Ctrl+N)">＋</span>
     </div>
     <div class="col2-tools">
       <div class="search-box">
@@ -1476,6 +1476,7 @@ $("tocClose").onclick = () => {
 };
 function toggleSidebar() {
   if (window.innerWidth <= 860) {
+    document.body.classList.remove("sidebar-collapsed");   // 桌面折叠态残留会让移动端抽屉打不开
     document.body.classList.toggle("mobile-nav-open");
   } else {
     document.body.classList.toggle("sidebar-collapsed");
@@ -1693,12 +1694,18 @@ function mergeStates(restoredState, currentState) {
     } else {
       // 同 ID 笔记本：合并分区与页面
       const targetNb = mergedNbs.find(n => n.id === curNb.id);
+      if (!targetNb) return;
+      if (!Array.isArray(targetNb.sections)) targetNb.sections = [];
+      if (!Array.isArray(curNb.sections)) return;
       const secIds = new Set(targetNb.sections.map(s => s.id));
       curNb.sections.forEach(curSec => {
         if (!secIds.has(curSec.id)) {
           targetNb.sections.push(JSON.parse(JSON.stringify(curSec)));
         } else {
           const targetSec = targetNb.sections.find(s => s.id === curSec.id);
+          if (!targetSec) return;
+          if (!Array.isArray(targetSec.pages)) targetSec.pages = [];
+          if (!Array.isArray(curSec.pages)) return;
           const pgIds = new Set(targetSec.pages.map(p => p.id));
           curSec.pages.forEach(curPg => {
             if (!pgIds.has(curPg.id)) targetSec.pages.unshift(JSON.parse(JSON.stringify(curPg)));
@@ -1711,8 +1718,10 @@ function mergeStates(restoredState, currentState) {
 }
 
 /* ---------- 保存逻辑：静默写回句柄 / 服务器 API / 跨浏览器下载降级 ---------- */
+let saveInFlight = false;
 async function saveToHandle(silent) {
-  if (!fileHandle) return false;
+  if (!fileHandle || saveInFlight) return false;
+  saveInFlight = true;
   try {
     if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
       if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("未授予文件写入权限");
@@ -1730,6 +1739,7 @@ async function saveToHandle(silent) {
     await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
     await persistSession();
     if (!silent) toast("✓ 已写回 " + fileHandle.name);
+    if (!unchanged) scheduleSave();
     return true;
   } catch (e) {
     if (!silent) {
@@ -1737,27 +1747,37 @@ async function saveToHandle(silent) {
       exportDownload(true);
     }
     return false;
+  } finally {
+    saveInFlight = false;
   }
 }
 async function saveToServer(silent) {
-  if (!serverMode || !serverFile) return false;
+  if (!serverMode || !serverFile || saveInFlight) return false;
+  saveInFlight = true;
   try {
+    // 快照与提交内容必须一致：写盘期间继续输入时不能把 dirty 清掉，否则这段改动会丢
+    const savingSnapshot = JSON.stringify(state);
     const r = await fetch("/api/save/" + encodeURIComponent(serverFile), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(state)
+      body: savingSnapshot
     });
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || "unknown");
-    dirty = false; lastSavedAt = new Date();
+    const unchanged = JSON.stringify(state) === savingSnapshot;
+    if (unchanged) dirty = false;
+    lastSavedAt = new Date();
     updateStatus();
-    await idbSet("draft", { state, savedAt: Date.now(), dirty: false });
+    await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
     await persistSession();
     if (!silent) toast("✓ 已保存至服务器 " + serverFile);
+    if (!unchanged) scheduleSave();
     return true;
   } catch (e) {
     if (!silent) toast("⚠ 服务器保存失败：" + e.message);
     return false;
+  } finally {
+    saveInFlight = false;
   }
 }
 const saveActive = silent => serverMode ? saveToServer(silent) : saveToHandle(silent);
@@ -1769,8 +1789,9 @@ function exportDownload(markAsSavedFallback = false) {
   const baseName = (currentNbName() || "巢记笔记本").replace(/[\\/:*?"<>|]/g, "_");
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
   a.download = markAsSavedFallback ? (baseName + ".nbk") : `${baseName}-${stamp}.nbk`;
+  const downloadUrl = a.href;
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 1500);
   if (markAsSavedFallback) {
     dirty = false;
     lastSavedAt = new Date();
@@ -1846,8 +1867,8 @@ async function openFile() {
     });
     const file = await h.getFile();
     const text = await file.text();
-    const parsed = JSON.parse(text);
-    if (!parsed || parsed.app !== APP || !Array.isArray(parsed.notebooks)) {
+    const parsed = normalizeState(JSON.parse(text));
+    if (!parsed) {
       toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)");
       return;
     }
@@ -1940,6 +1961,11 @@ function pickNbkModal(items) {
             if (!j.ok) return toast("删除失败：" + (j.error || ""));
             const idx = arr.indexOf(it);
             if (idx >= 0) arr.splice(idx, 1);
+            if (serverFile === it.file) {
+              serverFile = null;
+              $("fileState").textContent = "服务器模式 · 未选择笔记本";
+              updateStatus(); persistSession();
+            }
             renderItems(arr);
             toast("✓ 已删除 " + it.file);
           } catch (err) { toast("删除失败：" + err.message); }
@@ -2078,12 +2104,21 @@ async function createNotebookFlow() {
 $("btnNew").onclick = createNotebookFlow;
 $("btnNewBlank").onclick = createNotebookFlow;
 
-async function serverLoadFile(name) {
+async function serverLoadFile(name, allowCreate = true) {
   try {
     name = name.replace(/(\.nbk)+$/i, "") + ".nbk";
     const r = await fetch("/api/load/" + encodeURIComponent(name));
     const j = await r.json();
     if (!j.ok) {
+      if (r.status === 404 && !allowCreate) {
+        // 会话恢复场景：文件被外部删除/改名时明确提示，而不是悄悄新建空文件覆盖观感
+        serverFile = null;
+        $("fileState").textContent = "服务器模式 · 未选择笔记本";
+        updateStatus();
+        persistSession();
+        toast("⚠ 上次的笔记本已不存在：" + name);
+        return;
+      }
       if (r.status === 404) {
         const nb = newNb(name.replace(/\.nbk$/i, "") || "我的笔记本");
         const p0 = { id: uid(), title: "第一页", html: "<p></p>", created: Date.now(), updated: Date.now() };
@@ -2105,8 +2140,11 @@ async function serverLoadFile(name) {
       }
       throw new Error(j.error || "unknown");
     }
+    if (!adoptState(j.state, name)) {
+      toast("⚠ 服务器文件内容无效，已忽略：" + name);
+      return;
+    }
     serverFile = name;
-    adoptState(j.state, name);
     $("fileState").textContent = name + "（服务器）";
     $("handleBanner").style.display = "none";
     dirty = false; lastSavedAt = new Date();
@@ -2122,8 +2160,8 @@ $("fileInput").addEventListener("change", async e => {
   const f = e.target.files[0];
   if (!f) return;
   try {
-    const parsed = JSON.parse(await readFileTextSmart(f));
-    if (!parsed || parsed.app !== APP || !Array.isArray(parsed.notebooks)) {
+    const parsed = normalizeState(JSON.parse(await readFileTextSmart(f)));
+    if (!parsed) {
       toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)");
       e.target.value = "";
       return;
@@ -2150,12 +2188,78 @@ $("fileInput").addEventListener("change", async e => {
   e.target.value = "";
 });
 
+/* ---------- 载入外部 .nbk 的安全清洗与结构校验（防 XSS / 防脏数据崩溃） ---------- */
+const NBK_DANGEROUS_TAGS = "script,style,iframe,object,embed,link,meta,base,form,svg,math,video,audio,source,track";
+function cleanPageHtml(html) {
+  const src = String(html || "");
+  let body = null;
+  try {
+    if (typeof DOMParser === "function") {
+      const doc = new DOMParser().parseFromString(src, "text/html");
+      body = doc && doc.body;
+    }
+  } catch (e) { body = null; }
+  if (!body) {
+    // 退路：无法解析时按纯文本处理，宁可不渲染也不执行脚本
+    const d = document.createElement("div");
+    d.textContent = src;
+    return d.innerHTML;
+  }
+  body.querySelectorAll(NBK_DANGEROUS_TAGS).forEach(n => n.remove());
+  body.querySelectorAll("*").forEach(n => {
+    [...n.attributes].forEach(a => {
+      const an = a.name.toLowerCase();
+      if (an.startsWith("on")) { n.removeAttribute(a.name); return; }
+      if (an === "href" || an === "src" || an === "xlink:href" || an === "action" || an === "srcdoc") {
+        const v = String(a.value || "").replace(/[\u0000-\u0020]/g, "").toLowerCase();
+        if (v.startsWith("javascript:") || v.startsWith("vbscript:") || v.startsWith("data:text/html")) n.removeAttribute(a.name);
+      }
+    });
+  });
+  return body.innerHTML;
+}
+function normalizeState(raw) {
+  if (!raw || typeof raw !== "object" || raw.app !== APP || !Array.isArray(raw.notebooks)) return null;
+  const out = [];
+  raw.notebooks.forEach((nb, ni) => {
+    if (!nb || typeof nb !== "object") return;
+    const sections = [];
+    (Array.isArray(nb.sections) ? nb.sections : []).forEach(sec => {
+      if (!sec || typeof sec !== "object") return;
+      const pages = [];
+      (Array.isArray(sec.pages) ? sec.pages : []).forEach(p => {
+        if (!p || typeof p !== "object") return;
+        pages.push({
+          id: typeof p.id === "string" && p.id ? p.id : uid(),
+          title: typeof p.title === "string" ? p.title : "",
+          html: cleanPageHtml(typeof p.html === "string" ? p.html : ""),
+          created: typeof p.created === "number" ? p.created : Date.now(),
+          updated: typeof p.updated === "number" ? p.updated : Date.now(),
+          pinned: !!p.pinned
+        });
+      });
+      sections.push({
+        id: typeof sec.id === "string" && sec.id ? sec.id : uid(),
+        name: typeof sec.name === "string" ? sec.name : "默认分区",
+        pages
+      });
+    });
+    out.push({
+      id: typeof nb.id === "string" && nb.id ? nb.id : uid(),
+      name: typeof nb.name === "string" ? nb.name : "笔记本 " + (ni + 1),
+      sections: sections.length ? sections : [{ id: uid(), name: "默认分区", pages: [] }]
+    });
+  });
+  return { app: APP, ver: 1, notebooks: out };
+}
+
 function adoptState(obj, name) {
-  if (!obj || obj.app !== APP || !Array.isArray(obj.notebooks)) {
+  const normalized = normalizeState(obj);
+  if (!normalized) {
     toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)");
     return false;
   }
-  state = obj;
+  state = normalized;
   sel.nb = state.notebooks[0] ? state.notebooks[0].id : null;
   const nb0 = findNb(sel.nb);
   sel.sec = nb0 && nb0.sections[0] ? nb0.sections[0].id : null;
@@ -2342,6 +2446,14 @@ function parseFrontmatter(rawMd) {
   return { meta: Object.keys(meta).length ? meta : null, rawFrontmatter: rawFm, body };
 }
 
+function safeMdUrl(url, forImage) {
+  const s = String(url || "").trim();
+  const v = s.replace(/[\u0000-\u0020]/g, "").toLowerCase();
+  if (v.startsWith("javascript:") || v.startsWith("vbscript:")) return "#";
+  if (v.startsWith("data:") && !(forImage && v.startsWith("data:image/"))) return "#";
+  return s;
+}
+
 function mdInlineToHtml(s, refLinks = {}) {
   if (!s) return "";
   const slots = [];
@@ -2379,13 +2491,13 @@ function mdInlineToHtml(s, refLinks = {}) {
     const altM = attrs.match(/alt\s*=\s*["']([^"']*)["']/i);
     const wM = attrs.match(/width\s*=\s*["']?(\d+)["']?/i);
     const wStyle = wM ? ` style="width:${wM[1]}px;height:auto;" width="${wM[1]}"` : "";
-    return saveSlot(`<img src="${escHtml(srcM[1])}" alt="${escHtml(altM ? altM[1] : "")}"${wStyle}>`);
+    return saveSlot(`<img src="${escHtml(safeMdUrl(srcM[1], true))}" alt="${escHtml(altM ? altM[1] : "")}"${wStyle}>`);
   });
 
   // 5) Obsidian 嵌入图片 ![[image.png|300]] 与双链 [[页面名|显示名]]
   raw = raw.replace(/!\[\[([^\]|]+)(?:\|(\d+))?\]\]/g, (_, target, w) => {
     const wAttr = w ? ` style="width:${w}px;height:auto;" width="${w}"` : "";
-    return saveSlot(`<img src="${escHtml(target.trim())}" alt="${escHtml(target.trim())}"${wAttr}>`);
+    return saveSlot(`<img src="${escHtml(safeMdUrl(target.trim(), true))}" alt="${escHtml(target.trim())}"${wAttr}>`);
   });
   raw = raw.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => {
     const t = target.trim();
@@ -2403,21 +2515,21 @@ function mdInlineToHtml(s, refLinks = {}) {
       wAttr = ` style="width:${pipeM[2]}px;height:auto;" width="${pipeM[2]}"`;
     }
     const tAttr = title ? ` title="${escHtml(title)}"` : "";
-    return saveSlot(`<img src="${escHtml(url)}" alt="${escHtml(alt)}"${tAttr}${wAttr}>`);
+    return saveSlot(`<img src="${escHtml(safeMdUrl(url, true))}" alt="${escHtml(alt)}"${tAttr}${wAttr}>`);
   });
 
   // 7) 标准链接 [text](url "title") 与引用式链接 [text][id]
   raw = raw.replace(/\[([^\]]+)\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["']([^"']*)["'])?\s*\)/g, (_, txt, urlAngle, urlPlain, title) => {
     const url = urlAngle || urlPlain || "";
     const tAttr = title ? ` title="${escHtml(title)}"` : "";
-    return saveSlot(`<a href="${escHtml(url)}"${tAttr}>${mdInlineToHtml(txt, refLinks)}</a>`);
+    return saveSlot(`<a href="${escHtml(safeMdUrl(url, false))}"${tAttr}>${mdInlineToHtml(txt, refLinks)}</a>`);
   });
   raw = raw.replace(/\[([^\]]+)\]\s*\[([^\]]*)\]/g, (full, txt, refId) => {
     const key = (refId || txt).trim().toLowerCase();
     const def = refLinks[key];
     if (!def) return full;
     const tAttr = def.title ? ` title="${escHtml(def.title)}"` : "";
-    return saveSlot(`<a href="${escHtml(def.url)}"${tAttr}>${mdInlineToHtml(txt, refLinks)}</a>`);
+    return saveSlot(`<a href="${escHtml(safeMdUrl(def.url, false))}"${tAttr}>${mdInlineToHtml(txt, refLinks)}</a>`);
   });
 
   // 8) 脚注引用 [^id]
@@ -2940,7 +3052,8 @@ function htmlToMd(html, options = {}) {
       const codeEl = node.querySelector("code");
       const lang = (node.getAttribute("data-lang") || (codeEl && codeEl.className.replace(/^language-/, "")) || "").trim();
       const rawCode = (codeEl ? codeEl.textContent : node.textContent).replace(/\n$/, "");
-      const fence = rawCode.includes("```") ? "````" : "```";
+      const longestTicks = (rawCode.match(/`+/g) || []).reduce((m, run) => Math.max(m, run.length), 0);
+      const fence = "`".repeat(Math.max(3, longestTicks + 1));
       return `${fence}${lang}\n${rawCode}\n${fence}\n\n`;
     }
     if (tag === "BLOCKQUOTE") {
@@ -3075,6 +3188,20 @@ function setMdViewMode(mode) {
       $("btnMdMode").textContent = "M↓ 纯源码模式";
       $("btnMdMode").classList.add("active");
     }
+  }
+  // 源码（纯 textarea）模式下禁用富文本工具栏，避免按钮操作写进隐藏编辑器后静默丢失
+  const richDisabled = mdViewMode === "source";
+  const toolbarEl = $("toolbar");
+  if (toolbarEl) {
+    toolbarEl.querySelectorAll("button, select, input").forEach(el => {
+      el.disabled = richDisabled;
+      if (richDisabled) el.title = el.title || "该格式按钮仅在富文本/分屏模式可用";
+    });
+    // 视图切换/复制 MD 按钮在源码模式下仍要可用，否则用户无法退出源码模式
+    ["btnMdMode", "btnCopyMd"].forEach(id => {
+      const b = $(id);
+      if (b) b.disabled = false;
+    });
   }
   if (p) { updatePageMeta(p); renderToc(); }
 }
@@ -3337,7 +3464,9 @@ function insertCalloutModal() {
   box.querySelector("#coOk").onclick = insert;
   box.onkeydown = e => {
     if (e.isComposing) return;
-    if (e.key === "Enter") insert();
+    const inFoot = e.target && e.target.closest && e.target.closest(".modal-foot");
+    const isSelect = e.target && e.target.tagName === "SELECT";
+    if (e.key === "Enter" && !inFoot && !isSelect) insert();
     if (e.key === "Escape") close();
   };
 }
@@ -3470,19 +3599,21 @@ function importMdSplitByHeadings(rawMd, baseName) {
   const hasMultipleH1 = lines.filter(l => /^#\s+\S/.test(l)).length >= 2;
   const splitRegex = hasMultipleH1 ? /^#\s+(.+)$/ : /^#{1,2}\s+(.+)$/;
   const chunks = [];
-  let curTitle = baseName, curLines = [], inFence = false;
+  let curTitle = baseName, curLines = [], inFence = false, curFromHeading = false;
   for (const ln of lines) {
     if (/^\s*(`{3,}|~{3,})/.test(ln)) inFence = !inFence;
     const m = !inFence && ln.match(splitRegex);
     if (m) {
-      if (curLines.join("").trim()) chunks.push({ title: curTitle, md: curLines.join("\n") });
+      // 标题节即使暂时没有正文也保留（空页面比丢节更符合预期）
+      if (curFromHeading || curLines.join("").trim()) chunks.push({ title: curTitle, md: curLines.join("\n") });
       curTitle = m[1].replace(/\s+#+\s*$/, "").trim();
       curLines = [];
+      curFromHeading = true;
     } else {
       curLines.push(ln);
     }
   }
-  if (curLines.join("").trim()) chunks.push({ title: curTitle, md: curLines.join("\n") });
+  if (curFromHeading || curLines.join("").trim()) chunks.push({ title: curTitle, md: curLines.join("\n") });
   if (!chunks.length) chunks.push({ title: baseName, md: text });
 
   chunks.reverse().forEach(ch => {
@@ -3760,9 +3891,11 @@ function exportPageTxt(p) {
   toast("✓ 已导出 " + name);
 }
 function exportPagePdf(p) {
+  flushMdSourceIfNeeded();
   const area = $("printArea");
   area.innerHTML = "<h1>" + escHtml(p.title || "无标题") + "</h1>" + sanitizeForWord(p.html || "");
   toast("请在弹出的打印对话框中选择「另存为 PDF」");
+  window.addEventListener("afterprint", () => { area.innerHTML = ""; }, { once: true });
   setTimeout(() => window.print(), 120);
 }
 function exportBookMd() {
@@ -3862,7 +3995,10 @@ async function delNb(id) {
     if (!state) return;
     const insertAt = Math.min(idx, state.notebooks.length);
     state.notebooks.splice(insertAt, 0, removed);
-    sel = { ...prevSel, nb: removed.id };
+    const restoredNb = findNb(removed.id);
+    const restoredSec = restoredNb && (restoredNb.sections.find(x => x.id === prevSel.sec) || restoredNb.sections[0]);
+    const restoredPg = restoredSec && (restoredSec.pages.find(x => x.id === prevSel.pg) || restoredSec.pages[0]);
+    sel = { nb: removed.id, sec: restoredSec ? restoredSec.id : null, pg: restoredPg ? restoredPg.id : null };
     markDirty(true); renderAll();
   });
 }
@@ -3889,7 +4025,9 @@ async function delSec(id) {
     if (!targetNb) return;
     const insertAt = Math.min(idx, targetNb.sections.length);
     targetNb.sections.splice(insertAt, 0, removed);
-    sel = { nb: parentNbId, sec: removed.id, pg: prevSel.pg };
+    const restoredSec = findSec(parentNbId, removed.id);
+    const restoredPg = restoredSec && (restoredSec.pages.find(x => x.id === prevSel.pg) || restoredSec.pages[0]);
+    sel = { nb: parentNbId, sec: removed.id, pg: restoredPg ? restoredPg.id : null };
     markDirty(true); renderAll();
   });
 }
@@ -3919,12 +4057,14 @@ async function delPg(id, nbId = sel.nb, secId = sel.sec) {
 }
 function togglePinPage(p) {
   if (!p) return;
+  flushMdSourceIfNeeded();
   p.pinned = !p.pinned;
   p.updated = Date.now();
   markDirty(); renderAll();
   toast(p.pinned ? "📌 已置顶页面" : "已取消置顶");
 }
 function movePageToSectionModal(p, fromNbId, fromSecId) {
+  flushMdSourceIfNeeded();
   const targets = [];
   state.notebooks.forEach(nb => {
     nb.sections.forEach(s => {
@@ -4074,11 +4214,18 @@ function updateActivePageCardInPlace(p) {
   if (!p) return;
   const activeCard = $("pgList") && $("pgList").querySelector(".pg-card.sel");
   if (!activeCard) { renderPages(); return; }
+  const kw = ($("pgSearch") && $("pgSearch").value.trim()) || "";
   const titleEl = activeCard.querySelector(".pg-title");
-  if (titleEl) titleEl.textContent = (p.pinned ? "📌 " : "") + (p.title || "（无标题）");
+  if (titleEl) titleEl.innerHTML = (p.pinned ? "📌 " : "") + highlightKeyword(p.title || "（无标题）", kw);
   const rawTxt = pageText(p).replace(/\s+/g, " ").trim();
+  let snippet = rawTxt.slice(0, 70);
+  if (kw && rawTxt.toLowerCase().includes(kw.toLowerCase())) {
+    const pos = rawTxt.toLowerCase().indexOf(kw.toLowerCase());
+    const start = Math.max(0, pos - 16);
+    snippet = (start > 0 ? "…" : "") + rawTxt.slice(start, start + 68);
+  }
   const snipEl = activeCard.querySelector(".pg-snippet");
-  if (snipEl) snipEl.textContent = rawTxt.slice(0, 70);
+  if (snipEl) snipEl.innerHTML = highlightKeyword(snippet, kw);
   const metaFirst = activeCard.querySelector(".pg-meta span");
   if (metaFirst) metaFirst.textContent = `${relTime(p.updated || p.created)} · ${rawTxt.length}字`;
 }
@@ -4193,7 +4340,7 @@ function renderPages() {
       e.preventDefault();
       ctxMenu(e, [
         [p.pinned ? "📌 取消置顶" : "📌 置顶本页", () => togglePinPage(p)],
-        ["✏ 重命名标题", () => { sel.nb = nb.id; sel.sec = sec.id; renameItem("pg", p.id, nb.id); }],
+        ["✏ 重命名标题", () => { sel.nb = nb.id; sel.sec = sec.id; sel.pg = p.id; renameItem("pg", p.id, nb.id); }],
         ["📋 复制页面", () => { sel.nb = nb.id; sel.sec = sec.id; copyPage(p); }],
         ["📂 移动到其他分区…", () => movePageToSectionModal(p, nb.id, sec.id)],
         [null, null],
@@ -4206,6 +4353,7 @@ function renderPages() {
 }
 
 function copyPage(p) {
+  flushMdSourceIfNeeded();
   const sec = findSec(sel.nb, sel.sec); if (!sec) return;
   const np = { ...p, id: uid(), title: (p.title || "无标题") + " (副本)", created: Date.now(), updated: Date.now() };
   sec.pages.unshift(np); sel.pg = np.id; markDirty(); renderAll();
@@ -4586,7 +4734,7 @@ function renderEditor() {
   }
   // 恢复保存的待办复选框 DOM 状态
   restoreEditorCheckboxes();
-  if (mdViewMode !== "wysiwyg" && $("mdSourceEditor")) {
+  if (mdViewMode !== "wysiwyg" && $("mdSourceEditor") && document.activeElement !== $("mdSourceEditor")) {
     $("mdSourceEditor").value = htmlToMd(p.html || "");
   }
   $("btnPinPage").classList.toggle("active", !!p.pinned);
@@ -4743,6 +4891,8 @@ function updateToolbarState() {
   const selEd = window.getSelection();
   if (!selEd || !selEd.rangeCount || !$("editor").contains(selEd.anchorNode)) {
     $("tableQuickBar").style.display = "none";
+    $("codeQuickBar").style.display = "none";
+    lastActivePre = null;
     return;
   }
   // 1) 更新段落级别下拉框
@@ -4791,6 +4941,16 @@ function updateToolbarState() {
   }
 }
 let lastActivePre = null;
+// 点击编辑器与快捷栏之外的区域时收起浮动快捷栏，避免焦点离开后残留导致误删/误复制上一个代码块
+document.addEventListener("mousedown", e => {
+  const tgt = e.target;
+  if (!tgt || !tgt.closest) return;
+  if ($("editor").contains(tgt) || tgt.closest("#codeQuickBar") || tgt.closest("#tableQuickBar")) return;
+  const cq = $("codeQuickBar");
+  const tq = $("tableQuickBar");
+  if (cq) cq.style.display = "none";
+  if (tq) tq.style.display = "none";
+}, true);
 $("codeLangSelect").onchange = () => {
   if (!lastActivePre || !lastActivePre.isConnected) return;
   const lang = $("codeLangSelect").value;
@@ -5221,7 +5381,9 @@ $("btnTable").onclick = () => {
   };
   box.querySelector("#tblOk").onclick = insert;
   box.onkeydown = e => {
-    if (e.key === "Enter") insert();
+    const inFoot = e.target && e.target.closest && e.target.closest(".modal-foot");
+    const isSelect = e.target && e.target.tagName === "SELECT";
+    if (e.key === "Enter" && !inFoot && !isSelect) insert();
     if (e.key === "Escape") close();
   };
 };
@@ -5416,8 +5578,10 @@ $("editor").addEventListener("paste", async e => {
     restoreEditorCheckboxes();
     syncEditorToPage();
     toastUndo("✨ 已智能解析粘贴的 Markdown 排版", () => {
+      // 只整体恢复粘贴前的内容；不再二次 insertText（原实现会把纯文本插到错误位置并打乱正文）
       $("editor").innerHTML = prevHtml;
-      document.execCommand("insertText", false, plainText);
+      restoreEditorCheckboxes();
+      $("editor").focus({ preventScroll: true });
       syncEditorToPage();
     });
   }
@@ -5446,8 +5610,9 @@ window.addEventListener("drop", async e => {
   if (f.name.toLowerCase().endsWith(".nbk")) {
     if (!(await confirmUnsavedBeforeSwitch("打开拖入的 .nbk 文件"))) return;
     try {
-      const parsed = JSON.parse(await f.text());
-      fileHandle = null;
+      const parsed = normalizeState(JSON.parse(await f.text()));
+      if (!parsed) { toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)"); return; }
+      fileHandle = null;   // 校验通过后才解绑旧句柄，避免非法文件导致静默脱离原文件
       if (adoptState(parsed, f.name)) {
         dirty = false; lastSavedAt = null;
         updateStatus(); persistSession();
@@ -5610,6 +5775,26 @@ function hideRecoverBanners() {
   $("handleBanner").style.display = "none";
   $("draftBanner").style.display = "none";
 }
+function offerDraftRestore(d, label) {
+  $("handleBanner").style.display = "none";
+  $("draftBanner").style.display = "flex";
+  $("draftRestore").onclick = async () => {
+    const currentInMem = (state && Array.isArray(state.notebooks) && state.notebooks.length)
+      ? JSON.parse(JSON.stringify(state))
+      : null;
+    const merged = currentInMem ? mergeStates(d.state, currentInMem) : d.state;
+    adoptState(merged, label || "上次草稿（未关联文件）");
+    dirty = true;
+    hideRecoverBanners();
+    updateStatus();
+    await flushSnapshotNow();
+    scheduleSave();
+  };
+  $("draftDiscard").onclick = () => {
+    $("draftBanner").style.display = "none";
+    idbSet("draft", { app: "empty", savedAt: Date.now() });
+  };
+}
 function draftIsNewer(sess, draftRaw) {
   const d = normalizeDraft(draftRaw);
   if (!(d && d.state && d.state.app === APP)) return false;
@@ -5674,6 +5859,7 @@ async function restoreFromSession(sess, draftRaw, applyDraft) {
         $("fileState").textContent = "服务器模式 · " + j.dataDir;
         updateStatus();
         const sess = await idbGet("session");
+        const draftRaw = await idbGet("draft");
         if (sess && sess.serverFile) {
           await serverLoadFile(sess.serverFile);
         } else {
@@ -5683,6 +5869,11 @@ async function restoreFromSession(sess, draftRaw, applyDraft) {
           $("handleRestore").onclick = () => serverPickFile();
           $("handleFileOnly").style.display = "none";
           $("handleForget").style.display = "none";
+        }
+        // 服务器模式同样提示恢复未写回草稿（上次保存失败/强制关闭时避免丢内容）
+        const dDS = normalizeDraft(draftRaw);
+        if (dDS && dDS.state && dDS.state.app === APP && dDS.dirty) {
+          offerDraftRestore(dDS, (sess && sess.serverFile ? sess.serverFile : "上次草稿") + "（含未写回草稿）");
         }
         return;
       }
@@ -5768,6 +5959,14 @@ setupAutoMarkdownInput();
 $("btnCopyMd").onclick = copyCurrentPageAsMd;
 $("btnCallout").onclick = insertCalloutModal;
 $("btnMdMode").onclick = cycleMdViewMode;
+// 让 role="button" 的自定义可点击元素可以用 Enter/Space 触发（基础无障碍）
+document.addEventListener("keydown", e => {
+  const tgt = e.target;
+  if ((e.key === "Enter" || e.key === " ") && tgt && tgt.matches && tgt.matches('[role="button"]')) {
+    e.preventDefault();
+    tgt.click();
+  }
+});
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m") {
     e.preventDefault();

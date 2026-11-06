@@ -9,4 +9,5 @@ probe/
 .audit/
 .venv/
 test-results/
+dsh.md
 *.nbk

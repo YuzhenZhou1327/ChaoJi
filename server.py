@@ -52,6 +52,17 @@ except ImportError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = HERE
+_BOUND_PORT = 0  # 实际监听端口，用于 Host/Origin 同源校验（main() 里赋值）
+
+# Windows 保留设备名：即使带 .nbk 扩展名也无法创建文件
+_RESERVED_STEMS = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % i for i in range(1, 10)]
+    + ["LPT%d" % i for i in range(1, 10)]
+)
+
+# 同一时刻最多处理的连接数（防本地脚本/恶意页面耗尽线程与文件句柄）
+MAX_CONNECTIONS = 64
 
 
 def find_frontend():
@@ -83,6 +94,8 @@ def valid_nbk_name(name):
         return False
     stem = name[:-4]
     if not stem or stem.endswith(" ") or stem.endswith("."):
+        return False
+    if stem.split(".")[0].upper() in _RESERVED_STEMS:
         return False
     forbidden = '<>:"/\\|?*'
     safe_punct = "-._ ()[]+~@#%&="
@@ -164,8 +177,9 @@ def parse_http_request(conn):
 
 
 def http_response(conn, code, body, ctype="application/json; charset=utf-8"):
-    reason = {200: "OK", 204: "No Content", 400: "Bad Request", 404: "Not Found",
-              405: "Method Not Allowed", 413: "Payload Too Large", 500: "Server Error"}.get(code, "OK")
+    reason = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
+              405: "Method Not Allowed", 413: "Payload Too Large", 500: "Server Error",
+              503: "Service Unavailable"}.get(code, "OK")
     head = ("HTTP/1.1 %d %s\r\n" % (code, reason)) + \
         ("Content-Type: %s\r\n" % ctype) + \
         ("Content-Length: %d\r\n" % len(body)) + \
@@ -183,16 +197,33 @@ class MiniHTTPServer:
         self.sock.bind((host, port))
         self.sock.listen(16)
         self.port = self.sock.getsockname()[1]
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS) if threading is not None else None
 
     def serve_forever(self):
         while True:
             conn, _addr = self.sock.accept()
             if threading is not None:
-                t = threading.Thread(target=self._safe, args=(conn,))
+                if not self._slots.acquire(False):
+                    try:
+                        http_response(conn, 503, b'{"ok":false,"error":"too many connections"}')
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    continue
+                t = threading.Thread(target=self._safe_release, args=(conn,))
                 t.daemon = True
                 t.start()
             else:
                 self._safe(conn)
+
+    def _safe_release(self, conn):
+        try:
+            self._safe(conn)
+        finally:
+            self._slots.release()
 
     def _safe(self, conn):
         try:
@@ -216,11 +247,36 @@ class MiniHTTPServer:
 
 # ---------- 路由 ----------
 
+def _allowed_hosts():
+    if not _BOUND_PORT:
+        return []
+    return ["127.0.0.1:%d" % _BOUND_PORT, "localhost:%d" % _BOUND_PORT]
+
+
+def safe_origin(headers):
+    """校验 Host / Origin，阻断跨站页面(CSRF)与 DNS rebinding 滥用本机写接口。
+    无 Origin 的非浏览器客户端（curl / 集成测试）放行；浏览器请求的 Origin 必须匹配本机地址。"""
+    host = (headers.get("host") or "").strip().lower()
+    allowed = _allowed_hosts()
+    if allowed and host and host not in allowed:
+        return False
+    origin = (headers.get("origin") or "").strip().lower()
+    if origin:
+        if origin == "null":
+            return False
+        if allowed and origin not in ("http://" + h for h in allowed):
+            return False
+    return True
+
+
 def route(method, path, headers, body, conn):
     if method == "OPTIONS":
         return http_response(conn, 204, b"", "text/plain")
     if method not in ("GET", "POST"):
         return http_response(conn, 405, b'{"ok":false,"error":"method not allowed"}')
+
+    if not safe_origin(headers):
+        return http_response(conn, 403, b'{"ok":false,"error":"forbidden origin/host"}')
 
     if path in ("/", "/index.html"):
         fn = find_frontend()
@@ -312,16 +368,73 @@ def safe_path(name):
     return os.path.join(DATA_DIR, name)
 
 
+_save_seq = 0
+_save_seq_lock = threading.Lock() if threading is not None else None
+_file_locks = {}
+_file_locks_guard = threading.Lock() if threading is not None else None
+
+
+def _next_save_seq():
+    global _save_seq
+    if _save_seq_lock is not None:
+        with _save_seq_lock:
+            _save_seq += 1
+            return _save_seq
+    _save_seq += 1
+    return _save_seq
+
+
+def _get_file_lock(full):
+    """同一文件的并发保存串行化（Windows 上并发 os.replace 会偶发 WinError 5）。"""
+    if threading is None:
+        return None
+    with _file_locks_guard:
+        lk = _file_locks.get(full)
+        if lk is None:
+            lk = threading.Lock()
+            _file_locks[full] = lk
+        return lk
+
+
 def atomic_write(full, data):
-    tmp = full + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, full)
+    """原子写：先写唯一临时文件再 os.replace，同一文件名串行 + Windows 下替换失败重试。"""
+    lock = _get_file_lock(full)
+    if lock is not None:
+        lock.acquire()
+    tmp = "%s.tmp.%d.%d" % (full, os.getpid(), _next_save_seq())
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+        replace_err = None
+        for attempt in range(5):
+            try:
+                os.replace(tmp, full)
+                replace_err = None
+                break
+            except OSError as e:
+                replace_err = e
+                if time is not None:
+                    time.sleep(0.02 * (attempt + 1))
+        if replace_err is not None:
+            raise replace_err
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def api_load(name, conn):
     full = safe_path(name)
-    if not full or not os.path.exists(full):
+    if not full:
+        return http_response(conn, 400, b'{"ok":false,"error":"invalid file name"}')
+    if not os.path.exists(full):
         return http_response(conn, 404, b'{"ok":false,"error":"file not found"}')
     try:
         with open(full, "rb") as f:
@@ -329,8 +442,13 @@ def api_load(name, conn):
     except OSError as e:
         return http_response(conn, 500,
             ('{"ok":false,"error":"read failed: %s"}' % json_escape(str(e))).encode("utf-8"))
-    if not raw or not (raw.startswith(b"{") and raw.endswith(b"}")):
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:].strip()
+    if not raw:
         raw = b'{"app":"chaoji","ver":1,"notebooks":[]}'
+    elif not (raw.startswith(b"{") and raw.endswith(b"}")):
+        return http_response(conn, 400,
+            ('{"ok":false,"error":"%s 不是有效的巢记笔记文件（内容不是 JSON 对象）"}' % json_escape(name)).encode("utf-8"))
     prefix = ('{"ok":true,"file":"%s","state":' % json_escape(name)).encode("utf-8")
     return http_response(conn, 200, prefix + raw + b"}")
 
@@ -345,17 +463,9 @@ def api_save(name, body, conn):
     stripped = body.strip()
     if not stripped or not (stripped.startswith(b"{") and stripped.endswith(b"}")):
         return http_response(conn, 400, b'{"ok":false,"error":"invalid state json payload"}')
-    tmp = full + ".tmp"
     try:
-        with open(tmp, "wb") as f:
-            f.write(stripped)
-        os.replace(tmp, full)
+        atomic_write(full, stripped)
     except OSError as e:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
         return http_response(conn, 500,
             ('{"ok":false,"error":"save failed: %s"}' % json_escape(str(e))).encode("utf-8", "replace"))
     return http_response(conn, 200,
@@ -364,7 +474,9 @@ def api_save(name, body, conn):
 
 def api_delete(name, conn):
     full = safe_path(name)
-    if not full or not os.path.exists(full):
+    if not full:
+        return http_response(conn, 400, b'{"ok":false,"error":"invalid file name"}')
+    if not os.path.exists(full):
         return http_response(conn, 404, b'{"ok":false,"error":"file not found"}')
     try:
         os.remove(full)
@@ -414,7 +526,7 @@ def api_save_jsonbody(body, conn):
 # ---------- 启动 ----------
 
 def main():
-    global DATA_DIR
+    global DATA_DIR, _BOUND_PORT
     # 手工解析参数（不依赖 argparse）
     port, dir_arg, no_browser = 8765, None, False
     argv = sys.argv[1:]
@@ -464,6 +576,7 @@ def main():
         print("[提示] 端口 %d 被占用(%s)，自动改用 %d" % (port, e, free))
         srv = MiniHTTPServer("127.0.0.1", free, route)
 
+    _BOUND_PORT = srv.port
     url = "http://127.0.0.1:%d/" % srv.port
     print("巢记服务器模式已启动（极简依赖版 v2.1）")
     print("  地址      : " + url)

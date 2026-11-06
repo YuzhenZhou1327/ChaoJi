@@ -37,6 +37,17 @@
 
 ---
 
+## enhancement 分支：稳定性与安全加固
+
+- **安全防护**：打开/合并/拖入 `.nbk` 时对正文 HTML 做惰性净化（移除脚本、事件属性与 `javascript:` 等危险协议），阻断存储型 XSS；Markdown 链接/图片增加协议白名单；服务器模式新增 `Host`/`Origin` 同源校验（防 CSRF 与 DNS rebinding），写盘改为唯一临时文件原子替换（并发保存不再可能产生空文件），并对 Windows 保留设备名与非法文件名统一拒绝。
+- **数据可靠性**：修复服务器自动保存期间继续输入导致脏标记被误清、改动丢失的竞态；服务器模式启动时恢复未写回草稿；兼容 UTF-8 BOM，非法/损坏文件明确报错而不是静默显示空笔记本。
+- **交互修复**：智能粘贴 Markdown 的「撤销」不再打乱正文；拖入非法 `.nbk` 不再丢失当前文件句柄；源码模式渲染不再回滚正在编辑的内容；删除笔记本/分区撤销后选中状态正确；代码块快捷栏残留、插入弹窗 Enter 误触发、移动端抽屉裁切等细节修复。
+- **测试基建**：新增服务器纯函数单测（47 断言）、HTTP 集成测试（15 例）、真实浏览器 E2E（17 例），`python run_all_tests.py` 一键运行。
+
+完整审计与修复清单见 [docs/AUDIT-FIXES.md](docs/AUDIT-FIXES.md)。
+
+---
+
 ## 快速上手
 
 ### 方式一：直接双击打开（零依赖浏览器文件模式）
@@ -48,6 +59,21 @@
 python3 check.py                 # 可选：运行环境自检
 python3 server.py                # 启动本地服务 (默认 http://127.0.0.1:8765/)
 ```
+
+---
+
+## 开发与测试
+
+```bash
+python test_server_unit.py          # 服务器纯函数单测
+python test_server_integration.py   # 服务器 HTTP 集成测试（自动在临时目录起真实服务）
+python test_e2e_ui.py               # 真实浏览器 E2E（需 Playwright）
+python run_all_tests.py             # 一键运行全部测试（unit → integration → E2E）
+```
+
+- E2E 使用系统已安装的 Chrome/Edge（`channel="chrome"`），**无需** `playwright install`、无需 Node.js；依赖见 `requirements-test.txt`。
+- 所有测试的数据目录均为临时目录，不会污染仓库或你的 `.nbk` 文件。
+- 当前结果：unit 47 通过 / integration 15 通过 / E2E 17 通过。
 
 ---
 
