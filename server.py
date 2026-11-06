@@ -75,7 +75,7 @@ def find_frontend():
 
 def valid_nbk_name(name):
     """不用 re 的文件名白名单：支持字母/数字/中文及常见安全符号（含空格、括号），.nbk 结尾，禁路径穿越与危险字符"""
-    if not name or not name.endswith(".nbk") or len(name) > 200 or len(name) <= 4:
+    if not name or not name.lower().endswith(".nbk") or len(name) > 200 or len(name) <= 4:
         return False
     if "/" in name or "\\" in name or ".." in name:
         return False
@@ -287,7 +287,7 @@ def api_list(conn):
     except OSError:
         names = []
     for fn in names:
-        if not fn.endswith(".nbk") or not valid_nbk_name(fn):
+        if not fn.lower().endswith(".nbk") or not valid_nbk_name(fn):
             continue
         full = os.path.join(DATA_DIR, fn)
         if not os.path.isfile(full):

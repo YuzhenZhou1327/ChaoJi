@@ -1341,6 +1341,30 @@ body.wide-editor .editor-container { max-width: 100%; }
               <button class="btn small" data-tbl="alignRight" title="当前列右对齐">➡右齐</button>
               <button class="btn small danger" data-tbl="delTable">删整表</button>
             </div>
+            <!-- 代码块上下文快捷栏 -->
+            <div id="codeQuickBar" style="display:none; align-items:center; gap:6px; flex-wrap:wrap; margin-top:6px; padding:5px 10px; background:var(--panel-alt); border:1px solid var(--line-strong); border-radius:6px; font-size:12px;">
+              <span style="font-weight:600; color:var(--accent);">``` 代码块工具：</span>
+              <select class="btn small" id="codeLangSelect" title="设置代码块语言标识">
+                <option value="">纯文本 (无语言)</option>
+                <option value="python">Python</option>
+                <option value="javascript">JavaScript</option>
+                <option value="typescript">TypeScript</option>
+                <option value="sql">SQL</option>
+                <option value="bash">Bash / Shell</option>
+                <option value="json">JSON</option>
+                <option value="html">HTML</option>
+                <option value="css">CSS</option>
+                <option value="java">Java</option>
+                <option value="c">C / C++</option>
+                <option value="go">Go</option>
+                <option value="rust">Rust</option>
+                <option value="yaml">YAML</option>
+                <option value="markdown">Markdown</option>
+              </select>
+              <button class="btn small" id="btnCopyCodeBlock">📋 复制代码</button>
+              <button class="btn small" id="btnExitCodeBlock" title="在代码块下方插入新段落并跳出 (Ctrl+Enter)">⏎ 跳出到新段落</button>
+              <button class="btn small danger" id="btnDelCodeBlock">🗑 删除代码块</button>
+            </div>
           </div>
           <div id="editorBodySplit" class="mode-wysiwyg">
             <div id="mdSourcePane">
@@ -1634,14 +1658,56 @@ async function persistSession() {
   });
 }
 let snapTimer = null;
-function scheduleSnapshot() {
+async function flushSnapshotNow() {
+  if (snapTimer) { clearTimeout(snapTimer); snapTimer = null; }
+  if (!state) return;
+  await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
+  await persistSession();
+}
+function scheduleSnapshot(immediate = false) {
+  if (immediate) {
+    flushSnapshotNow();
+    return;
+  }
   if (snapTimer) clearTimeout(snapTimer);
-  snapTimer = setTimeout(async () => {
-    snapTimer = null;
-    if (!state) return;
-    await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
-    await persistSession();
-  }, 600);
+  snapTimer = setTimeout(() => {
+    flushSnapshotNow();
+  }, 250);
+}
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && state) flushSnapshotNow();
+});
+window.addEventListener("pagehide", () => {
+  if (state) flushSnapshotNow();
+});
+
+/* 无损合并两个 state 的笔记本列表：防止用户先建了新笔记本再点「恢复」时把新笔记本冲掉 */
+function mergeStates(restoredState, currentState) {
+  if (!restoredState || !Array.isArray(restoredState.notebooks)) return currentState;
+  if (!currentState || !Array.isArray(currentState.notebooks) || !currentState.notebooks.length) return restoredState;
+  const mergedNbs = restoredState.notebooks.map(nb => JSON.parse(JSON.stringify(nb)));
+  const existingIds = new Set(mergedNbs.map(n => n.id));
+  currentState.notebooks.forEach(curNb => {
+    if (!existingIds.has(curNb.id)) {
+      mergedNbs.push(JSON.parse(JSON.stringify(curNb)));
+    } else {
+      // 同 ID 笔记本：合并分区与页面
+      const targetNb = mergedNbs.find(n => n.id === curNb.id);
+      const secIds = new Set(targetNb.sections.map(s => s.id));
+      curNb.sections.forEach(curSec => {
+        if (!secIds.has(curSec.id)) {
+          targetNb.sections.push(JSON.parse(JSON.stringify(curSec)));
+        } else {
+          const targetSec = targetNb.sections.find(s => s.id === curSec.id);
+          const pgIds = new Set(targetSec.pages.map(p => p.id));
+          curSec.pages.forEach(curPg => {
+            if (!pgIds.has(curPg.id)) targetSec.pages.unshift(JSON.parse(JSON.stringify(curPg)));
+          });
+        }
+      });
+    }
+  });
+  return { app: APP, ver: 1, notebooks: mergedNbs };
 }
 
 /* ---------- 保存逻辑：静默写回句柄 / 服务器 API / 跨浏览器下载降级 ---------- */
@@ -1651,12 +1717,18 @@ async function saveToHandle(silent) {
     if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
       if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("未授予文件写入权限");
     }
+    const savingSnapshot = JSON.stringify(state);
+    const saveStartTs = Date.now();
     const w = await fileHandle.createWritable();
-    await w.write(new Blob([JSON.stringify(state)], { type: "application/json" }));
+    await w.write(new Blob([savingSnapshot], { type: "application/json" }));
     await w.close();
-    dirty = false; lastSavedAt = new Date();
+    // 若在异步写盘期间用户没有产生新的修改，才清除 dirty
+    const unchanged = JSON.stringify(state) === savingSnapshot;
+    if (unchanged) dirty = false;
+    lastSavedAt = new Date(saveStartTs);
     updateStatus();
-    persistSession();
+    await idbSet("draft", { state, savedAt: Date.now(), dirty: !!dirty });
+    await persistSession();
     if (!silent) toast("✓ 已写回 " + fileHandle.name);
     return true;
   } catch (e) {
@@ -1679,7 +1751,8 @@ async function saveToServer(silent) {
     if (!j.ok) throw new Error(j.error || "unknown");
     dirty = false; lastSavedAt = new Date();
     updateStatus();
-    persistSession();
+    await idbSet("draft", { state, savedAt: Date.now(), dirty: false });
+    await persistSession();
     if (!silent) toast("✓ 已保存至服务器 " + serverFile);
     return true;
   } catch (e) {
@@ -1738,6 +1811,31 @@ async function ensureFileThen(fn) {
 }
 
 /* ---------- 打开与新建文件流程 (修复覆盖旧文件 Bug) ---------- */
+function askOpenOrMergeNbk(fileName, nbCount) {
+  return new Promise(resolve => {
+    const mask = document.createElement("div");
+    mask.className = "modal-mask";
+    const box = document.createElement("div");
+    box.className = "modal-box";
+    box.style.width = "min(450px, 94vw)";
+    box.innerHTML =
+      `<div class="modal-head"><span>📂 打开「${escHtml(fileName)}」</span><span style="cursor:pointer;color:var(--muted);" id="omClose">✕</span></div>` +
+      `<div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">` +
+      `<div style="font-size:13px;color:var(--fg-sec);">该文件包含 <b>${nbCount}</b> 个笔记本。当前窗口已有打开的笔记本，请选择操作方式：</div>` +
+      `<button class="btn primary" id="omSwitch" style="justify-content:flex-start;padding:10px 14px;text-align:left;">📂 切换到该文件（关闭当前视图，直接打开 ${escHtml(fileName)}）</button>` +
+      `<button class="btn" id="omMerge" style="justify-content:flex-start;padding:10px 14px;text-align:left;">➕ 合并导入到当前窗口（保留现有笔记本，把该文件的笔记本并入左栏）</button>` +
+      `</div>` +
+      `<div class="modal-foot"><button class="btn" id="omCancel">取消</button></div>`;
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    const close = v => { mask.remove(); resolve(v); };
+    box.querySelector("#omClose").onclick = () => close(null);
+    box.querySelector("#omCancel").onclick = () => close(null);
+    box.querySelector("#omSwitch").onclick = () => close("switch");
+    box.querySelector("#omMerge").onclick = () => close("merge");
+    mask.onclick = e => { if (e.target === mask) close(null); };
+  });
+}
 async function openFile() {
   if (!(await confirmUnsavedBeforeSwitch("打开其他文件"))) return;
   if (serverMode) return serverPickFile();
@@ -1749,14 +1847,26 @@ async function openFile() {
     const file = await h.getFile();
     const text = await file.text();
     const parsed = JSON.parse(text);
-    fileHandle = h;
-    if (!adoptState(parsed, h.name)) {
-      fileHandle = null;
+    if (!parsed || parsed.app !== APP || !Array.isArray(parsed.notebooks)) {
+      toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)");
       return;
     }
+    if (state && state.notebooks && state.notebooks.length > 0) {
+      const mode = await askOpenOrMergeNbk(h.name, parsed.notebooks.length);
+      if (!mode) return;
+      if (mode === "merge") {
+        state = mergeStates(state, parsed);
+        markDirty(true);
+        renderAll();
+        toast(`✓ 已将「${h.name}」中的笔记本合并到当前工作区`);
+        return;
+      }
+    }
+    fileHandle = h;
+    adoptState(parsed, h.name);
     dirty = false; lastSavedAt = new Date();
+    await flushSnapshotNow();
     updateStatus();
-    persistSession();
   } catch (e) {
     if (e.name !== "AbortError") toast("打开失败：" + e.message);
   }
@@ -1857,7 +1967,7 @@ function pickNbkModal(items) {
     btnOk.onclick = () => {
       let name = (inp.value || "").trim();
       if (!name) { inp.focus(); return; }
-      if (!name.endsWith(".nbk")) name += ".nbk";
+      name = name.replace(/(\.nbk)+$/i, "") + ".nbk";
       close(); resolve({ type: "create", file: name });
     };
     btnCancel.onclick = () => { close(); resolve(null); };
@@ -1890,7 +2000,37 @@ async function serverPickFile() {
 
 /* 新建独立的 .nbk 文件（彻底解绑旧 fileHandle / serverFile，修复覆盖原文件 Bug） */
 async function createNotebookFlow() {
-  if (!(await confirmUnsavedBeforeSwitch("新建空白笔记本文件"))) return;
+  // 如果当前工作区已经有笔记本，先询问用户是想「在当前列表中新增笔记本」还是「清空并另建独立 .nbk 文件」
+  if (state && state.notebooks && state.notebooks.length > 0) {
+    const choice = await new Promise(resolve => {
+      const mask = document.createElement("div");
+      mask.className = "modal-mask";
+      const box = document.createElement("div");
+      box.className = "modal-box";
+      box.style.width = "min(440px, 94vw)";
+      box.innerHTML =
+        `<div class="modal-head"><span>➕ 选择新建方式</span><span style="cursor:pointer;color:var(--muted);" id="cnClose">✕</span></div>` +
+        `<div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">` +
+        `<div style="font-size:13px;color:var(--fg-sec);">检测到当前已打开 <b>${state.notebooks.length}</b> 个笔记本，请选择：</div>` +
+        `<button class="btn primary" id="cnAddInCurrent" style="justify-content:flex-start;padding:10px 14px;text-align:left;">📕 在当前窗口新增一个笔记本（推荐，与现有笔记本并列保存）</button>` +
+        `<button class="btn" id="cnNewFile" style="justify-content:flex-start;padding:10px 14px;text-align:left;">📄 关闭当前笔记，另建全新的 .nbk 独立文件</button>` +
+        `</div>` +
+        `<div class="modal-foot"><button class="btn" id="cnCancel">取消</button></div>`;
+      mask.appendChild(box);
+      document.body.appendChild(mask);
+      const close = v => { mask.remove(); resolve(v); };
+      box.querySelector("#cnClose").onclick = () => close(null);
+      box.querySelector("#cnCancel").onclick = () => close(null);
+      box.querySelector("#cnAddInCurrent").onclick = () => close("add");
+      box.querySelector("#cnNewFile").onclick = () => close("newfile");
+      mask.onclick = e => { if (e.target === mask) close(null); };
+    });
+    if (!choice) return;
+    if (choice === "add") {
+      return $("addNb").click();
+    }
+  }
+  if (!(await confirmUnsavedBeforeSwitch("另建全新的空白 .nbk 文件"))) return;
   const name = await uiPrompt("新建笔记本文件", "我的笔记本", "请输入笔记本名称");
   if (name === null) return;
   const cleanName = (name.trim() || "我的笔记本");
@@ -1909,7 +2049,7 @@ async function createNotebookFlow() {
   sel = { nb: nb.id, sec: nb.sections[0].id, pg: firstPage.id };
 
   if (serverMode) {
-    const fName = cleanName.replace(/[\\/:*?"<>|]/g, "_") + ".nbk";
+    const fName = cleanName.replace(/(\.nbk)+$/i, "").replace(/[\\/:*?"<>|]/g, "_") + ".nbk";
     try {
       const r = await fetch("/api/save/" + encodeURIComponent(fName), {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state)
@@ -1940,7 +2080,7 @@ $("btnNewBlank").onclick = createNotebookFlow;
 
 async function serverLoadFile(name) {
   try {
-    if (!name.endsWith(".nbk")) name += ".nbk";
+    name = name.replace(/(\.nbk)+$/i, "") + ".nbk";
     const r = await fetch("/api/load/" + encodeURIComponent(name));
     const j = await r.json();
     if (!j.ok) {
@@ -1982,11 +2122,29 @@ $("fileInput").addEventListener("change", async e => {
   const f = e.target.files[0];
   if (!f) return;
   try {
-    const parsed = JSON.parse(await f.text());
-    fileHandle = null; // 传统 input 无法获取写回句柄，清空旧句柄防串写
+    const parsed = JSON.parse(await readFileTextSmart(f));
+    if (!parsed || parsed.app !== APP || !Array.isArray(parsed.notebooks)) {
+      toast("⚠ 这不是有效的巢记笔记本文件 (.nbk)");
+      e.target.value = "";
+      return;
+    }
+    if (state && state.notebooks && state.notebooks.length > 0) {
+      const mode = await askOpenOrMergeNbk(f.name, parsed.notebooks.length);
+      if (!mode) { e.target.value = ""; return; }
+      if (mode === "merge") {
+        state = mergeStates(state, parsed);
+        markDirty(true);
+        renderAll();
+        toast(`✓ 已将「${f.name}」合并到当前工作区`);
+        e.target.value = "";
+        return;
+      }
+    }
+    fileHandle = null;
     if (adoptState(parsed, f.name)) {
       dirty = false; lastSavedAt = null;
-      updateStatus(); persistSession();
+      await flushSnapshotNow();
+      updateStatus();
     }
   } catch (err) { toast("打开失败：" + err.message); }
   e.target.value = "";
@@ -2018,6 +2176,7 @@ function newNb(name) {
 $("btnOpen").onclick = openFile;
 $("btnOpenOrNew").onclick = openFile;
 $("btnSave").onclick = () => {
+  flushMdSourceIfNeeded();
   if (!state) return toast("当前还没有打开或创建笔记本");
   if (serverMode) {
     if (serverFile) saveActive(false);
@@ -2028,6 +2187,7 @@ $("btnSave").onclick = () => {
 };
 $("btnImportMd").onclick = () => importMdFile();
 $("btnExportMenu").onclick = e => {
+  flushMdSourceIfNeeded();
   const r = $("btnExportMenu").getBoundingClientRect();
   const needPage = () => {
     const p = findPage();
@@ -2866,7 +3026,7 @@ function looksLikeMarkdown(text) {
 /* ================= 巢记 v2.2 Markdown 编辑、导入与导出增强交互模块 ================= */
 
 let mdViewMode = "wysiwyg"; // "wysiwyg" | "split" | "source"
-let autoMdEnabled = true;   // 是否开启富文本编辑器内 Markdown 实时语法糖
+let autoMdEnabled = false;  // 默认关闭打字实时 Markdown（格式只走工具栏）；可在工具栏手动开启
 
 (function initMdPrefs() {
   const p = loadPrefs();
@@ -2875,6 +3035,7 @@ let autoMdEnabled = true;   // 是否开启富文本编辑器内 Markdown 实时
 
 /* ---------- 1. 富文本 ⇄ MD 分屏 ⇄ MD 源码 三态视图切换 ---------- */
 function setMdViewMode(mode) {
+  flushMdSourceIfNeeded();
   const prevMode = mdViewMode;
   mdViewMode = mode;
   const wrap = $("editorBodySplit");
@@ -2931,25 +3092,48 @@ function cycleMdViewMode() {
   toast(labels[next]);
 }
 
+let mdSyncTimer = null;
+let mdEditingPageRef = null;
+function flushMdSourceIfNeeded() {
+  if (mdSyncTimer) {
+    clearTimeout(mdSyncTimer);
+    mdSyncTimer = null;
+  }
+  const srcArea = $("mdSourceEditor");
+  if (mdViewMode !== "wysiwyg" && mdEditingPageRef && srcArea) {
+    mdEditingPageRef.html = mdToHtml(srcArea.value);
+    mdEditingPageRef.updated = Date.now();
+    if (mdViewMode === "split" && findPage() === mdEditingPageRef) {
+      $("editor").innerHTML = mdEditingPageRef.html;
+      restoreEditorCheckboxes();
+    }
+    mdEditingPageRef = null;
+  }
+}
 function setupMdSourceEditorEvents() {
   const srcArea = $("mdSourceEditor");
   if (!srcArea) return;
-  let mdSyncTimer = null;
   srcArea.addEventListener("input", () => {
     const p = findPage();
     if (!p) return;
+    mdEditingPageRef = p;
+    const currentVal = srcArea.value;
     if (mdSyncTimer) clearTimeout(mdSyncTimer);
     mdSyncTimer = setTimeout(() => {
-      p.html = mdToHtml(srcArea.value);
-      p.updated = Date.now();
-      if (mdViewMode === "split") {
-        $("editor").innerHTML = p.html;
+      mdSyncTimer = null;
+      if (!mdEditingPageRef) return;
+      mdEditingPageRef.html = mdToHtml(currentVal);
+      mdEditingPageRef.updated = Date.now();
+      if (mdViewMode === "split" && findPage() === mdEditingPageRef) {
+        $("editor").innerHTML = mdEditingPageRef.html;
         restoreEditorCheckboxes();
       }
+      const targetP = mdEditingPageRef;
+      mdEditingPageRef = null;
       markDirty();
-      updatePageMeta(p);
+      updatePageMeta(targetP);
       renderToc();
-      renderPages();
+      updateActivePageCardInPlace(targetP);
     }, 120);
   });
   srcArea.addEventListener("keydown", e => {
@@ -3620,7 +3804,7 @@ $("addNb").onclick = async () => {
   nb.sections[0].pages.push(p0);
   state.notebooks.push(nb);
   sel = { nb: nb.id, sec: nb.sections[0].id, pg: p0.id };
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
 };
 $("addSec").onclick = async () => {
   const nb = state && state.notebooks.find(n => n.id === sel.nb);
@@ -3631,7 +3815,7 @@ $("addSec").onclick = async () => {
   const sec = { id: uid(), name: name.trim() || "新分区", pages: [p0] };
   nb.sections.push(sec);
   sel.sec = sec.id; sel.pg = p0.id;
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
 };
 async function renameItem(kind, id, nbIdOverride = null) {
   if (kind === "nb") {
@@ -3639,6 +3823,9 @@ async function renameItem(kind, id, nbIdOverride = null) {
     const name = await uiPrompt("重命名笔记本", nb.name);
     if (name === null || !name.trim()) return;
     nb.name = name.trim();
+    if (!fileHandle && !serverFile && state.notebooks.length === 1) {
+      $("fileState").textContent = nb.name + " (未落盘，按 Ctrl+S 保存)";
+    }
   } else if (kind === "sec") {
     const sec = findSec(nbIdOverride || sel.nb, id); if (!sec) return;
     const name = await uiPrompt("重命名分区", sec.name);
@@ -3653,9 +3840,10 @@ async function renameItem(kind, id, nbIdOverride = null) {
     p.title = name.trim();
     p.updated = Date.now();
   }
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
 }
 async function delNb(id) {
+  flushMdSourceIfNeeded();
   const nb = findNb(id); if (!nb) return;
   if (!(await uiConfirm("删除笔记本", `确定要删除笔记本「${nb.name}」及其全部分区与页面吗？（删除后可在底栏撤销）`, "删除", true))) return;
   const idx = state.notebooks.findIndex(n => n.id === id);
@@ -3669,15 +3857,19 @@ async function delNb(id) {
     const sec0 = findSec(sel.nb, sel.sec);
     sel.pg = sec0 && sec0.pages[0] ? sec0.pages[0].id : null;
   }
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
   toastUndo("已删除笔记本「" + (removed.name || "") + "」", () => {
-    state.notebooks.splice(idx, 0, removed);
-    sel = prevSel;
-    markDirty(); renderAll();
+    if (!state) return;
+    const insertAt = Math.min(idx, state.notebooks.length);
+    state.notebooks.splice(insertAt, 0, removed);
+    sel = { ...prevSel, nb: removed.id };
+    markDirty(true); renderAll();
   });
 }
 async function delSec(id) {
-  const nb = state.notebooks.find(n => n.id === sel.nb);
+  flushMdSourceIfNeeded();
+  const parentNbId = sel.nb;
+  const nb = findNb(parentNbId);
   if (!nb) return;
   const sec = nb.sections.find(s => s.id === id);
   if (!sec) return;
@@ -3691,14 +3883,18 @@ async function delSec(id) {
     const sec0 = findSec(sel.nb, sel.sec);
     sel.pg = sec0 && sec0.pages[0] ? sec0.pages[0].id : null;
   }
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
   toastUndo("已删除分区「" + (removed.name || "") + "」", () => {
-    nb.sections.splice(idx, 0, removed);
-    sel = prevSel;
-    markDirty(); renderAll();
+    const targetNb = findNb(parentNbId);
+    if (!targetNb) return;
+    const insertAt = Math.min(idx, targetNb.sections.length);
+    targetNb.sections.splice(insertAt, 0, removed);
+    sel = { nb: parentNbId, sec: removed.id, pg: prevSel.pg };
+    markDirty(true); renderAll();
   });
 }
 async function delPg(id, nbId = sel.nb, secId = sel.sec) {
+  flushMdSourceIfNeeded();
   const sec = findSec(nbId, secId);
   if (!sec) return;
   const p = sec.pages.find(x => x.id === id);
@@ -3707,16 +3903,18 @@ async function delPg(id, nbId = sel.nb, secId = sel.sec) {
   const idx = sec.pages.findIndex(x => x.id === id);
   if (idx < 0) return;
   const [removed] = sec.pages.splice(idx, 1);
-  const prevPg = sel.pg;
   if (sel.pg === id) {
     const nextP = sec.pages[idx] || sec.pages[idx - 1] || null;
     sel.pg = nextP ? nextP.id : null;
   }
-  markDirty(); renderAll();
+  markDirty(true); renderAll();
   toastUndo("已删除页面「" + (removed.title || "无标题") + "」", () => {
-    sec.pages.splice(idx, 0, removed);
-    sel.pg = prevPg;
-    markDirty(); renderAll();
+    const targetSec = findSec(nbId, secId);
+    if (!targetSec) return;
+    const insertAt = Math.min(idx, targetSec.pages.length);
+    targetSec.pages.splice(insertAt, 0, removed);
+    sel = { nb: nbId, sec: secId, pg: removed.id };
+    markDirty(true); renderAll();
   });
 }
 function togglePinPage(p) {
@@ -3790,7 +3988,9 @@ function renderAll() {
 }
 
 function renderNbs() {
-  const el = $("nbList"); el.innerHTML = "";
+  const el = $("nbList");
+  const prevScroll = el.scrollTop;
+  el.innerHTML = "";
   state.notebooks.forEach(nb => {
     let pgCnt = 0;
     nb.sections.forEach(s => pgCnt += s.pages.length);
@@ -3802,6 +4002,7 @@ function renderNbs() {
     d.onclick = e => {
       if (e.target.classList.contains("del")) return delNb(nb.id);
       if (e.target.classList.contains("ren")) return renameItem("nb", nb.id);
+      flushMdSourceIfNeeded();
       sel.nb = nb.id;
       sel.sec = nb.sections[0] ? nb.sections[0].id : null;
       const sec0 = findSec(sel.nb, sel.sec);
@@ -3822,10 +4023,13 @@ function renderNbs() {
     };
     el.appendChild(d);
   });
+  el.scrollTop = prevScroll;
 }
 
 function renderSecs() {
-  const el = $("secList"); el.innerHTML = "";
+  const el = $("secList");
+  const prevScroll = el.scrollTop;
+  el.innerHTML = "";
   const nb = findNb(sel.nb);
   $("secHeadLabel").textContent = "└ 分区" + (nb ? " · " + nb.name : "");
   if (!nb) return;
@@ -3838,6 +4042,7 @@ function renderSecs() {
     d.onclick = e => {
       if (e.target.classList.contains("del")) return delSec(sec.id);
       if (e.target.classList.contains("ren")) return renameItem("sec", sec.id);
+      flushMdSourceIfNeeded();
       sel.sec = sec.id;
       const remembered = lastPagePerSec.get(sec.id);
       sel.pg = sec.pages.some(p => p.id === remembered) ? remembered : (sec.pages[0] ? sec.pages[0].id : null);
@@ -3855,6 +4060,7 @@ function renderSecs() {
     };
     el.appendChild(d);
   });
+  el.scrollTop = prevScroll;
 }
 
 function highlightKeyword(text, kw) {
@@ -3864,8 +4070,45 @@ function highlightKeyword(text, kw) {
   return escHtml(text.slice(0, idx)) + `<mark class="search-hit">${escHtml(text.slice(idx, idx + kw.length))}</mark>` + escHtml(text.slice(idx + kw.length));
 }
 
+function updateActivePageCardInPlace(p) {
+  if (!p) return;
+  const activeCard = $("pgList") && $("pgList").querySelector(".pg-card.sel");
+  if (!activeCard) { renderPages(); return; }
+  const titleEl = activeCard.querySelector(".pg-title");
+  if (titleEl) titleEl.textContent = (p.pinned ? "📌 " : "") + (p.title || "（无标题）");
+  const rawTxt = pageText(p).replace(/\s+/g, " ").trim();
+  const snipEl = activeCard.querySelector(".pg-snippet");
+  if (snipEl) snipEl.textContent = rawTxt.slice(0, 70);
+  const metaFirst = activeCard.querySelector(".pg-meta span");
+  if (metaFirst) metaFirst.textContent = `${relTime(p.updated || p.created)} · ${rawTxt.length}字`;
+}
+function scrollToKeywordInEditor(kw) {
+  if (!kw || mdViewMode === "source") return;
+  const ed = $("editor");
+  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT, null);
+  const lowerKw = kw.toLowerCase();
+  let node;
+  while ((node = walker.nextNode())) {
+    const idx = (node.nodeValue || "").toLowerCase().indexOf(lowerKw);
+    if (idx >= 0) {
+      const r = document.createRange();
+      r.setStart(node, idx);
+      r.setEnd(node, idx + kw.length);
+      const selEd = window.getSelection();
+      selEd.removeAllRanges();
+      selEd.addRange(r);
+      const parentEl = node.parentElement;
+      if (parentEl && parentEl.scrollIntoView) {
+        parentEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return;
+    }
+  }
+}
 function renderPages() {
-  const el = $("pgList"); el.innerHTML = "";
+  const el = $("pgList");
+  const prevScroll = el.scrollTop;
+  el.innerHTML = "";
   if (!state) return;
   const kw = $("pgSearch").value.trim().toLowerCase();
   $("pgSearchClear").style.display = kw ? "block" : "none";
@@ -3937,12 +4180,14 @@ function renderPages() {
     d.onclick = e => {
       if (e.target.classList.contains("del")) return delPg(p.id, nb.id, sec.id);
       if (e.target.classList.contains("pin")) return togglePinPage(p);
+      flushMdSourceIfNeeded();
       sel.nb = nb.id;
       sel.sec = sec.id;
       sel.pg = p.id;
       lastPagePerSec.set(sec.id, p.id);
       if (window.innerWidth <= 860) document.body.classList.remove("mobile-nav-open");
       renderAll();
+      if (kw) scrollToKeywordInEditor(kw);
     };
     d.oncontextmenu = e => {
       e.preventDefault();
@@ -3957,6 +4202,7 @@ function renderPages() {
     };
     el.appendChild(d);
   });
+  el.scrollTop = prevScroll;
 }
 
 function copyPage(p) {
@@ -4102,10 +4348,52 @@ $("editor").addEventListener("keydown", e => {
     }
   }
 
-  // 2) 待办事项 .todo-item 内按 Enter 自动新建下一条待办，空待办按 Enter 退回普通段落
+  // 2) 待办事项 .todo-item 内按 Enter / Backspace / Tab 专门处理
   let anchorEl = selEd.anchorNode;
   if (anchorEl && anchorEl.nodeType === 3) anchorEl = anchorEl.parentElement;
   const todoRow = anchorEl && anchorEl.closest ? anchorEl.closest(".todo-item") : null;
+  if (todoRow && e.key === "Tab") {
+    e.preventDefault(); e.stopPropagation();
+    const curIndent = parseInt(todoRow.getAttribute("data-indent") || "0", 10) || 0;
+    const nextIndent = e.shiftKey ? Math.max(0, curIndent - 1) : Math.min(4, curIndent + 1);
+    if (nextIndent > 0) {
+      todoRow.setAttribute("data-indent", String(nextIndent));
+      todoRow.style.paddingLeft = (nextIndent * 22) + "px";
+    } else {
+      todoRow.removeAttribute("data-indent");
+      todoRow.style.paddingLeft = "";
+    }
+    syncEditorToPage();
+    return;
+  }
+  if (todoRow && e.key === "Backspace" && selEd.isCollapsed) {
+    const txtSpan = todoRow.querySelector(".todo-text");
+    const isAtStart = (selEd.anchorNode === txtSpan && selEd.anchorOffset === 0) ||
+                      (selEd.anchorNode && selEd.anchorNode.parentElement === txtSpan && !selEd.anchorNode.previousSibling && selEd.anchorOffset === 0);
+    if (!txtSpan || !txtSpan.textContent.trim() || isAtStart) {
+      e.preventDefault();
+      const curIndent = parseInt(todoRow.getAttribute("data-indent") || "0", 10) || 0;
+      if (curIndent > 0) {
+        const nextIndent = curIndent - 1;
+        if (nextIndent > 0) {
+          todoRow.setAttribute("data-indent", String(nextIndent));
+          todoRow.style.paddingLeft = (nextIndent * 22) + "px";
+        } else {
+          todoRow.removeAttribute("data-indent");
+          todoRow.style.paddingLeft = "";
+        }
+      } else {
+        const p = document.createElement("p");
+        p.innerHTML = txtSpan && txtSpan.innerHTML.trim() ? txtSpan.innerHTML : "<br>";
+        todoRow.replaceWith(p);
+        const r = document.createRange();
+        r.setStart(p, 0); r.collapse(true);
+        selEd.removeAllRanges(); selEd.addRange(r);
+      }
+      syncEditorToPage();
+      return;
+    }
+  }
   if (todoRow && e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     const txtSpan = todoRow.querySelector(".todo-text");
@@ -4198,6 +4486,8 @@ let removeImgOverlay = () => {};
       ["50%", () => setImgRatio(0.50)],
       ["75%", () => setImgRatio(0.75)],
       ["100%", () => setImgRatio(1.0)],
+      ["居左", () => { activeImg.style.display = ""; activeImg.style.margin = ""; syncOverlayPos(); syncEditorToPage(); }],
+      ["居中", () => { activeImg.style.display = "block"; activeImg.style.margin = "8px auto"; syncOverlayPos(); syncEditorToPage(); }],
       ["🗑", () => { activeImg.remove(); removeHandles(); syncEditorToPage(); }]
     ].forEach(([lbl, fn]) => {
       const b = document.createElement("button");
@@ -4355,6 +4645,8 @@ const findPage = () => {
 };
 
 function addPage() {
+  flushMdSourceIfNeeded();
+  if ($("pgSearch") && $("pgSearch").value) $("pgSearch").value = "";
   if (!state) initBlank();
   if (!state.notebooks.length) {
     const nb = newNb("我的笔记本");
@@ -4374,7 +4666,7 @@ function addPage() {
   sec.pages.unshift(p);
   sel.pg = p.id;
   lastPagePerSec.set(sec.id, p.id);
-  markDirty();
+  markDirty(true);
   renderAll();
   $("pgTitle").focus();
 }
@@ -4412,26 +4704,29 @@ function syncEditorToPage() {
   const p = findPage(); if (!p) return;
   p.html = $("editor").innerHTML;
   p.updated = Date.now();
+  if (mdViewMode === "split" && $("mdSourceEditor") && document.activeElement !== $("mdSourceEditor")) {
+    $("mdSourceEditor").value = htmlToMd(p.html);
+  }
   markDirty();
   updatePageMeta(p);
   renderToc();
-  renderPages();
+  updateActivePageCardInPlace(p);
 }
 $("pgTitle").addEventListener("input", () => {
   const p = findPage(); if (!p) return;
   p.title = $("pgTitle").value;
   p.updated = Date.now();
   markDirty();
-  renderPages();
+  updateActivePageCardInPlace(p);
 });
 $("editor").addEventListener("input", () => {
   syncEditorToPage();
 });
 
-function markDirty() {
+function markDirty(immediateSnap = false) {
   dirty = true;
   updateStatus();
-  scheduleSnapshot();
+  scheduleSnapshot(immediateSnap);
   scheduleSave();
 }
 let saveTimer = null;
@@ -4484,7 +4779,57 @@ function updateToolbarState() {
   } else {
     $("tableQuickBar").style.display = "none";
   }
+
+  // 6) 代码块上下文快捷栏显隐与语言同步
+  const preEl = findAncestorTag("PRE");
+  if (preEl && $("editor").contains(preEl)) {
+    lastActivePre = preEl;
+    $("codeQuickBar").style.display = "flex";
+    $("codeLangSelect").value = (preEl.getAttribute("data-lang") || "").toLowerCase();
+  } else {
+    $("codeQuickBar").style.display = "none";
+  }
 }
+let lastActivePre = null;
+$("codeLangSelect").onchange = () => {
+  if (!lastActivePre || !lastActivePre.isConnected) return;
+  const lang = $("codeLangSelect").value;
+  if (lang) lastActivePre.setAttribute("data-lang", lang);
+  else lastActivePre.removeAttribute("data-lang");
+  const codeEl = lastActivePre.querySelector("code");
+  if (codeEl) codeEl.className = lang ? "language-" + lang : "";
+  syncEditorToPage();
+};
+$("btnCopyCodeBlock").onclick = async () => {
+  if (!lastActivePre || !lastActivePre.isConnected) return;
+  const txt = lastActivePre.textContent || "";
+  try {
+    await navigator.clipboard.writeText(txt);
+    toast("📋 已复制代码块内容");
+  } catch (e) {
+    toast("复制失败，请手动选中复制");
+  }
+};
+$("btnExitCodeBlock").onclick = () => {
+  if (!lastActivePre || !lastActivePre.isConnected) return;
+  const p = document.createElement("p");
+  p.innerHTML = "<br>";
+  lastActivePre.parentNode.insertBefore(p, lastActivePre.nextSibling);
+  $("editor").focus({ preventScroll: true });
+  const r = document.createRange();
+  r.setStart(p, 0); r.collapse(true);
+  const selEd = window.getSelection();
+  selEd.removeAllRanges(); selEd.addRange(r);
+  syncEditorToPage();
+  updateToolbarState();
+};
+$("btnDelCodeBlock").onclick = () => {
+  if (!lastActivePre || !lastActivePre.isConnected) return;
+  lastActivePre.remove();
+  lastActivePre = null;
+  $("codeQuickBar").style.display = "none";
+  syncEditorToPage();
+};
 document.addEventListener("selectionchange", () => {
   if (document.activeElement === $("editor")) updateToolbarState();
 });
@@ -5267,7 +5612,9 @@ function hideRecoverBanners() {
 }
 function draftIsNewer(sess, draftRaw) {
   const d = normalizeDraft(draftRaw);
-  return !!(d && d.state && d.state.app === APP && d.dirty && (d.savedAt || 0) > ((sess && sess.lastSavedAt) || 0));
+  if (!(d && d.state && d.state.app === APP)) return false;
+  if (d.dirty) return true;
+  return (d.savedAt || 0) > ((sess && sess.lastSavedAt) || 0);
 }
 async function restoreFromSession(sess, draftRaw, applyDraft) {
   const h = sess && sess.fileHandle;
@@ -5282,6 +5629,9 @@ async function restoreFromSession(sess, draftRaw, applyDraft) {
         }
       }
     }
+    const currentInMem = (state && Array.isArray(state.notebooks) && state.notebooks.length)
+      ? JSON.parse(JSON.stringify(state))
+      : null;
     fileHandle = h;
     const text = await (await h.getFile()).text();
     const obj = JSON.parse(text);
@@ -5291,15 +5641,19 @@ async function restoreFromSession(sess, draftRaw, applyDraft) {
       return false;
     }
     const d = normalizeDraft(draftRaw);
-    const useDraft = applyDraft && draftIsNewer(sess, draftRaw);
-    adoptState(useDraft ? d.state : obj, h.name + (useDraft ? "（含未写回改动）" : ""));
+    const useDraft = applyDraft && (draftIsNewer(sess, draftRaw) || (d && d.state && Array.isArray(d.state.notebooks) && d.state.notebooks.length > (obj.notebooks || []).length));
+    let targetState = useDraft ? mergeStates(obj, d.state) : obj;
+    const hadInMem = !!(currentInMem && currentInMem.notebooks.length);
+    if (hadInMem) {
+      targetState = mergeStates(targetState, currentInMem);
+    }
+    adoptState(targetState, h.name + (useDraft || hadInMem ? "（已合并未保存内容）" : ""));
     fileHandle = h;
     lastSavedAt = sess.lastSavedAt ? new Date(sess.lastSavedAt) : null;
-    dirty = useDraft ? true : !!sess.dirty;
+    dirty = useDraft || hadInMem ? true : !!sess.dirty;
     hideRecoverBanners();
     updateStatus();
-    persistSession();
-    scheduleSnapshot();
+    await flushSnapshotNow();
     if (dirty) scheduleSave();
     return true;
   } catch (e) {
@@ -5388,13 +5742,17 @@ async function restoreFromSession(sess, draftRaw, applyDraft) {
   if (d && d.state && d.state.app === APP && state === null) {
     $("handleBanner").style.display = "none";
     $("draftBanner").style.display = "flex";
-    $("draftRestore").onclick = () => {
-      adoptState(d.state, "上次草稿（未关联文件）");
+    $("draftRestore").onclick = async () => {
+      const currentInMem = (state && Array.isArray(state.notebooks) && state.notebooks.length)
+        ? JSON.parse(JSON.stringify(state))
+        : null;
+      const merged = currentInMem ? mergeStates(d.state, currentInMem) : d.state;
+      adoptState(merged, "上次草稿（未关联文件）");
       dirty = true;
+      hideRecoverBanners();
       updateStatus();
-      scheduleSnapshot();
+      await flushSnapshotNow();
       scheduleSave();
-      $("draftBanner").style.display = "none";
     };
     $("draftDiscard").onclick = () => {
       $("draftBanner").style.display = "none";
